@@ -1,0 +1,435 @@
+{
+  "tables": {
+    "pricing_config": [
+      {
+        "id": "c392be69-ebf6-45d2-b2c9-063b01df339e",
+        "base_fee": 30,
+        "hourly_rate": 30,
+        "max_billable_hours": 4,
+        "created_at": "2026-06-27T18:06:44.437Z",
+        "updated_at": "2026-07-30T20:06:16.449Z"
+      }
+    ],
+    "snacks": [
+      {
+        "id": "855cc454-4d04-45be-b26f-a787ab101145",
+        "name": "Coffee",
+        "price": 55,
+        "available": true,
+        "created_at": "2026-06-27T18:06:44.437Z"
+      },
+      {
+        "id": "4ca4a803-a39b-4255-81b1-76f1cf8c9019",
+        "name": "Tea",
+        "price": 45,
+        "available": true,
+        "created_at": "2026-06-27T18:06:44.437Z"
+      },
+      {
+        "id": "ea2e86f5-8423-4e07-a500-89fc109d237c",
+        "name": "Soda",
+        "price": 15,
+        "available": true,
+        "created_at": "2026-06-27T18:06:44.437Z"
+      },
+      {
+        "id": "69c469d7-e942-40c1-ad72-4585964d7801",
+        "name": "Chips",
+        "price": 20,
+        "available": true,
+        "created_at": "2026-06-27T18:06:44.437Z"
+      },
+      {
+        "id": "b409b330-314a-45c0-8e88-04abf6b01146",
+        "name": "Cookie",
+        "price": 5,
+        "available": true,
+        "created_at": "2026-06-27T18:06:44.437Z"
+      },
+      {
+        "id": "b5fa0d02-7afb-4b6a-ab73-2809a8a768b9",
+        "name": "Sandwich",
+        "price": 25,
+        "available": true,
+        "created_at": "2026-06-27T18:06:44.437Z"
+      },
+      {
+        "available": true,
+        "name": "Milk",
+        "price": 55,
+        "id": "04abcce9-d1e1-4f3c-82c0-716ab4c80a57",
+        "created_at": "2026-07-30T19:42:18.038Z"
+      }
+    ],
+    "sessions": [
+      {
+        "id": "9fcbdd29-e3c8-45dd-8ebc-8e5733f144e2",
+        "customer_name": "Nina",
+        "member_count": 3,
+        "status": "active",
+        "started_at": "2026-07-27T16:21:44.437Z",
+        "ended_at": null,
+        "time_in": "2026-07-27T16:21:44.437Z",
+        "time_out": null,
+        "used_hours": 0,
+        "used_minutes": 0,
+        "base_fee": 30,
+        "hourly_rate": 30,
+        "total_cost": null,
+        "created_at": "2026-07-27T16:21:44.437Z"
+      },
+      {
+        "id": "d72147b1-e100-42d9-b0d3-f0c058f5a8f8",
+        "customer_name": "Bank",
+        "member_count": 2,
+        "status": "checked_out",
+        "started_at": "2026-07-27T13:06:44.437Z",
+        "ended_at": "2026-07-27T16:06:44.437Z",
+        "time_in": "2026-07-27T13:06:44.437Z",
+        "time_out": "2026-07-27T16:06:44.437Z",
+        "used_hours": 3,
+        "used_minutes": 0,
+        "base_fee": 30,
+        "hourly_rate": 30,
+        "total_cost": 26,
+        "created_at": "2026-07-27T13:06:44.437Z"
+      },
+      {
+        "id": "a7a2386f-0981-4f3b-af31-c7ad2bb47475",
+        "customer_name": "Ploy",
+        "member_count": 4,
+        "status": "checked_out",
+        "started_at": "2026-07-27T10:06:44.437Z",
+        "ended_at": "2026-07-27T12:06:44.437Z",
+        "time_in": "2026-07-27T10:06:44.437Z",
+        "time_out": "2026-07-27T12:06:44.437Z",
+        "used_hours": 2,
+        "used_minutes": 0,
+        "base_fee": 30,
+        "hourly_rate": 30,
+        "total_cost": 40,
+        "created_at": "2026-07-27T10:06:44.437Z"
+      },
+      {
+        "id": "e3b503c8-9915-4eeb-8eab-a97523d3081e",
+        "customer_name": "Somchai",
+        "member_count": 2,
+        "status": "checked_out",
+        "started_at": "2026-07-26T14:06:44.437Z",
+        "ended_at": "2026-07-26T17:06:44.437Z",
+        "time_in": "2026-07-26T14:06:44.437Z",
+        "time_out": "2026-07-26T17:06:44.437Z",
+        "used_hours": 3,
+        "used_minutes": 0,
+        "base_fee": 30,
+        "hourly_rate": 30,
+        "total_cost": 30,
+        "created_at": "2026-07-26T14:06:44.437Z"
+      },
+      {
+        "id": "42100b50-fd85-448c-9d43-662fbe8e7378",
+        "customer_name": "Mook",
+        "member_count": 5,
+        "status": "checked_out",
+        "started_at": "2026-07-22T13:06:44.437Z",
+        "ended_at": "2026-07-22T18:06:44.437Z",
+        "time_in": "2026-07-22T13:06:44.437Z",
+        "time_out": "2026-07-22T18:06:44.437Z",
+        "used_hours": 5,
+        "used_minutes": 0,
+        "base_fee": 30,
+        "hourly_rate": 30,
+        "total_cost": 94.5,
+        "created_at": "2026-07-22T13:06:44.437Z"
+      },
+      {
+        "id": "abc88ace-2a46-4d54-825a-434d6f5c51b1",
+        "customer_name": "Ken",
+        "member_count": 1,
+        "status": "checked_out",
+        "started_at": "2026-07-07T15:36:44.437Z",
+        "ended_at": "2026-07-07T18:06:44.437Z",
+        "time_in": "2026-07-07T15:36:44.437Z",
+        "time_out": "2026-07-07T18:06:44.437Z",
+        "used_hours": 2,
+        "used_minutes": 30,
+        "base_fee": 30,
+        "hourly_rate": 30,
+        "total_cost": 9.5,
+        "created_at": "2026-07-07T15:36:44.437Z"
+      },
+      {
+        "member_count": 1,
+        "status": "checked_out",
+        "ended_at": "2026-07-27T18:59:00.000Z",
+        "time_in": "2026-07-27T17:30:00.000Z",
+        "time_out": "2026-07-27T18:59:00.000Z",
+        "used_hours": 1,
+        "used_minutes": 29,
+        "base_fee": 30,
+        "hourly_rate": 30,
+        "total_cost": 49,
+        "customer_name": "T",
+        "started_at": "2026-07-27T17:30:00.000Z",
+        "id": "f2990c9c-af0e-4174-852d-4e2837c38e33",
+        "created_at": "2026-07-27T18:59:40.802Z"
+      },
+      {
+        "member_count": 1,
+        "status": "active",
+        "ended_at": null,
+        "time_in": "2026-07-28T16:38:00.000Z",
+        "time_out": null,
+        "used_hours": 0,
+        "used_minutes": 0,
+        "base_fee": 30,
+        "hourly_rate": 30,
+        "total_cost": null,
+        "customer_name": "TT",
+        "started_at": "2026-07-28T16:38:00.000Z",
+        "id": "0f5a2f36-c9d5-4660-b65e-af8d40d0784c",
+        "created_at": "2026-07-27T19:00:11.791Z"
+      },
+      {
+        "member_count": 2,
+        "status": "active",
+        "ended_at": null,
+        "time_in": "2026-07-30T08:14:00.000Z",
+        "time_out": null,
+        "used_hours": 0,
+        "used_minutes": 0,
+        "base_fee": 30,
+        "hourly_rate": 30,
+        "total_cost": null,
+        "customer_name": "T8",
+        "started_at": "2026-07-30T08:14:00.000Z",
+        "id": "2ea96507-1864-4c18-9947-d210c1015dd5",
+        "created_at": "2026-07-27T19:48:32.064Z"
+      },
+      {
+        "member_count": 2,
+        "status": "active",
+        "ended_at": null,
+        "time_in": "2026-07-27T17:48:00.000Z",
+        "time_out": null,
+        "used_hours": 0,
+        "used_minutes": 0,
+        "base_fee": 30,
+        "hourly_rate": 30,
+        "total_cost": null,
+        "customer_name": "t5",
+        "started_at": "2026-07-27T17:48:00.000Z",
+        "id": "2b1d61c0-8a11-48d0-8696-123a0df24ab2",
+        "created_at": "2026-07-27T20:36:14.867Z"
+      },
+      {
+        "member_count": 4,
+        "status": "active",
+        "ended_at": null,
+        "time_in": "2026-07-30T09:17:10.195Z",
+        "time_out": null,
+        "used_hours": 0,
+        "used_minutes": 0,
+        "base_fee": 30,
+        "hourly_rate": 30,
+        "total_cost": null,
+        "customer_name": "tree",
+        "started_at": "2026-07-30T09:17:10.195Z",
+        "id": "c7c88c71-e6e8-48a6-8b24-d29188489c2c",
+        "created_at": "2026-07-30T09:17:10.209Z"
+      },
+      {
+        "member_count": 3,
+        "status": "checked_out",
+        "ended_at": "2026-07-30T19:42:00.000Z",
+        "time_in": "2026-07-30T17:32:00.000Z",
+        "time_out": "2026-07-30T19:42:00.000Z",
+        "used_hours": 2,
+        "used_minutes": 10,
+        "base_fee": 30,
+        "hourly_rate": 30,
+        "total_cost": 275,
+        "customer_name": "mi",
+        "started_at": "2026-07-30T17:32:00.000Z",
+        "id": "5fe97ad4-9d8e-4e23-9a46-9acbed3fa60d",
+        "created_at": "2026-07-30T19:31:58.921Z"
+      },
+      {
+        "member_count": 5,
+        "status": "active",
+        "ended_at": null,
+        "time_in": "2026-07-30T16:31:00.000Z",
+        "time_out": null,
+        "used_hours": 0,
+        "used_minutes": 0,
+        "base_fee": 30,
+        "hourly_rate": 30,
+        "total_cost": null,
+        "customer_name": "mi",
+        "started_at": "2026-07-30T16:31:00.000Z",
+        "id": "e0b8fc1d-4115-4da0-bdd9-ecd8e9bee375",
+        "created_at": "2026-07-30T19:43:44.235Z"
+      },
+      {
+        "member_count": 1,
+        "status": "active",
+        "ended_at": null,
+        "time_in": "2026-07-30T16:31:00.000Z",
+        "time_out": null,
+        "used_hours": 0,
+        "used_minutes": 0,
+        "base_fee": 30,
+        "hourly_rate": 30,
+        "total_cost": null,
+        "customer_name": "ki",
+        "started_at": "2026-07-30T16:31:00.000Z",
+        "id": "059c4fda-1380-4935-a0ab-b4b80b253624",
+        "created_at": "2026-07-30T19:44:19.692Z"
+      },
+      {
+        "member_count": 2,
+        "status": "active",
+        "ended_at": null,
+        "time_in": "2026-07-30T20:05:02.868Z",
+        "time_out": null,
+        "used_hours": 0,
+        "used_minutes": 0,
+        "base_fee": 30,
+        "hourly_rate": 30,
+        "total_cost": null,
+        "customer_name": "ll",
+        "started_at": "2026-07-30T20:05:02.868Z",
+        "id": "ab7de032-aeff-4d58-8e10-ac63dad6dece",
+        "created_at": "2026-07-30T20:05:00.007Z"
+      }
+    ],
+    "session_snacks": [
+      {
+        "id": "1ef83295-691f-492f-a414-f4b172cc0641",
+        "session_id": "9fcbdd29-e3c8-45dd-8ebc-8e5733f144e2",
+        "snack_id": "855cc454-4d04-45be-b26f-a787ab101145",
+        "quantity": 2,
+        "price_at_time": 55,
+        "created_at": "2026-07-27T16:31:44.437Z"
+      },
+      {
+        "id": "31fc91b9-7f36-4f37-bb37-9f6c14bd7f2f",
+        "session_id": "9fcbdd29-e3c8-45dd-8ebc-8e5733f144e2",
+        "snack_id": "b409b330-314a-45c0-8e88-04abf6b01146",
+        "quantity": 1,
+        "price_at_time": 5,
+        "created_at": "2026-07-27T16:31:44.437Z"
+      },
+      {
+        "id": "c5adbeb5-616a-4ba8-a843-57306dd8ae59",
+        "session_id": "d72147b1-e100-42d9-b0d3-f0c058f5a8f8",
+        "snack_id": "ea2e86f5-8423-4e07-a500-89fc109d237c",
+        "quantity": 2,
+        "price_at_time": 15,
+        "created_at": "2026-07-27T13:16:44.437Z"
+      },
+      {
+        "id": "c0263481-2f2f-4381-ab64-4e1649454466",
+        "session_id": "d72147b1-e100-42d9-b0d3-f0c058f5a8f8",
+        "snack_id": "69c469d7-e942-40c1-ad72-4585964d7801",
+        "quantity": 1,
+        "price_at_time": 20,
+        "created_at": "2026-07-27T13:16:44.437Z"
+      },
+      {
+        "id": "b2869ecb-2aad-4f22-a56e-df8ec2648227",
+        "session_id": "a7a2386f-0981-4f3b-af31-c7ad2bb47475",
+        "snack_id": "4ca4a803-a39b-4255-81b1-76f1cf8c9019",
+        "quantity": 4,
+        "price_at_time": 45,
+        "created_at": "2026-07-27T10:16:44.437Z"
+      },
+      {
+        "id": "327f8de2-ccdc-46d8-bf84-228451e0eff9",
+        "session_id": "e3b503c8-9915-4eeb-8eab-a97523d3081e",
+        "snack_id": "b5fa0d02-7afb-4b6a-ab73-2809a8a768b9",
+        "quantity": 2,
+        "price_at_time": 25,
+        "created_at": "2026-07-26T14:16:44.437Z"
+      },
+      {
+        "id": "efb43896-519b-4274-a1d1-ae35f1c4cb08",
+        "session_id": "42100b50-fd85-448c-9d43-662fbe8e7378",
+        "snack_id": "855cc454-4d04-45be-b26f-a787ab101145",
+        "quantity": 3,
+        "price_at_time": 55,
+        "created_at": "2026-07-22T13:16:44.437Z"
+      },
+      {
+        "id": "0d2eb1a6-1dd0-4900-b6dc-dd48c2d18c4f",
+        "session_id": "42100b50-fd85-448c-9d43-662fbe8e7378",
+        "snack_id": "69c469d7-e942-40c1-ad72-4585964d7801",
+        "quantity": 2,
+        "price_at_time": 20,
+        "created_at": "2026-07-22T13:16:44.437Z"
+      },
+      {
+        "quantity": 1,
+        "session_id": "f2990c9c-af0e-4174-852d-4e2837c38e33",
+        "snack_id": "b5fa0d02-7afb-4b6a-ab73-2809a8a768b9",
+        "price_at_time": 25,
+        "id": "b1c7d630-e26e-4553-b869-9d8f0643927f",
+        "created_at": "2026-07-27T21:38:51.362Z"
+      },
+      {
+        "quantity": 2,
+        "session_id": "2ea96507-1864-4c18-9947-d210c1015dd5",
+        "snack_id": "b409b330-314a-45c0-8e88-04abf6b01146",
+        "price_at_time": 5,
+        "id": "dd416e9a-203b-4f88-8b7c-39033401e2a4",
+        "created_at": "2026-07-30T09:22:04.006Z"
+      },
+      {
+        "quantity": 2,
+        "session_id": "c7c88c71-e6e8-48a6-8b24-d29188489c2c",
+        "snack_id": "69c469d7-e942-40c1-ad72-4585964d7801",
+        "price_at_time": 20,
+        "id": "9de41b2f-001a-4089-8a09-1432ddd07203",
+        "created_at": "2026-07-30T19:30:00.370Z"
+      },
+      {
+        "quantity": 1,
+        "session_id": "c7c88c71-e6e8-48a6-8b24-d29188489c2c",
+        "snack_id": "855cc454-4d04-45be-b26f-a787ab101145",
+        "price_at_time": 55,
+        "id": "828b5ff5-65b3-4d6a-8ac8-7b9045558db0",
+        "created_at": "2026-07-30T19:30:03.034Z"
+      },
+      {
+        "quantity": 1,
+        "session_id": "5fe97ad4-9d8e-4e23-9a46-9acbed3fa60d",
+        "snack_id": "b5fa0d02-7afb-4b6a-ab73-2809a8a768b9",
+        "price_at_time": 25,
+        "id": "8e7ade60-a1d1-4e97-ad06-9fe2655389ec",
+        "created_at": "2026-07-30T19:32:39.887Z"
+      },
+      {
+        "quantity": 1,
+        "session_id": "5fe97ad4-9d8e-4e23-9a46-9acbed3fa60d",
+        "snack_id": "04abcce9-d1e1-4f3c-82c0-716ab4c80a57",
+        "price_at_time": 55,
+        "id": "24c80bcd-080a-4e43-a0c6-d463884e5461",
+        "created_at": "2026-07-30T19:42:18.064Z"
+      },
+      {
+        "quantity": 1,
+        "session_id": "5fe97ad4-9d8e-4e23-9a46-9acbed3fa60d",
+        "snack_id": "ea2e86f5-8423-4e07-a500-89fc109d237c",
+        "price_at_time": 15,
+        "id": "7696a192-835b-4f09-996b-b9f5b00d1848",
+        "created_at": "2026-07-30T19:57:36.465Z"
+      }
+    ]
+  },
+  "revisions": {
+    "pricing_config": 4,
+    "snacks": 4,
+    "sessions": 43,
+    "session_snacks": 50
+  }
+}

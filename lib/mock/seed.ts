@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto"
 
 import { calculateBillableHours, calculateSessionTotal } from "../billing"
+import { hashPassword } from "./password"
 import type { Row, TableName } from "./types"
 
 const MINUTE = 60 * 1000
@@ -11,6 +12,16 @@ const DAY = 24 * HOUR
 const BASE_FEE = 30
 const HOURLY_RATE = 30
 const MAX_BILLABLE_HOURS = 5
+
+/**
+ * Mirrors the starter accounts in `scripts/007_create_app_users.sql`. These are
+ * throwaway development credentials for a gitignored local database — the real
+ * ones live in Supabase and are changed there.
+ */
+const SEED_USERS: Array<[username: string, password: string, role: string]> = [
+  ["admin", "admin1234", "admin"],
+  ["staff", "staff1234", "staff"],
+]
 
 const SEED_SNACKS: Array<[string, number]> = [
   ["Coffee", 55],
@@ -61,6 +72,16 @@ export function createSeed(now: number = Date.now()): Record<TableName, Row[]> {
       updated_at: iso(now - 30 * DAY),
     },
   ]
+
+  const app_users: Row[] = SEED_USERS.map(([username, password, role]) => ({
+    id: randomUUID(),
+    username,
+    password_hash: hashPassword(password),
+    role,
+    is_active: true,
+    created_at: iso(now - 30 * DAY),
+    updated_at: iso(now - 30 * DAY),
+  }))
 
   const snacks: Row[] = SEED_SNACKS.map(([name, price]) => ({
     id: randomUUID(),
@@ -129,5 +150,5 @@ export function createSeed(now: number = Date.now()): Record<TableName, Row[]> {
     sessions.push(session)
   }
 
-  return { pricing_config, snacks, sessions, session_snacks }
+  return { pricing_config, snacks, sessions, session_snacks, app_users }
 }

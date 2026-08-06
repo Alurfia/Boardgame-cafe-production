@@ -1,3 +1,18 @@
+export type UserRole = "admin" | "staff"
+
+/**
+ * A staff account. `password_hash` is never selectable through the anon key —
+ * see `scripts/007_create_app_users.sql` — so it is not modelled here.
+ */
+export interface AppUser {
+  id: string
+  username: string
+  role: UserRole
+  is_active: boolean
+  created_at: string
+  updated_at: string
+}
+
 export interface PricingConfig {
   id: string
   base_fee: number

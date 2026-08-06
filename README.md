@@ -18,11 +18,15 @@ pnpm dev                     # http://localhost:3000
 With an empty `.env.local` the app runs in **`json` mode** against a local mock
 database, so no Supabase project is needed to try it out.
 
-| Route    | What it is                                       |
-| -------- | ------------------------------------------------ |
-| `/`      | Landing page linking to both apps                |
-| `/kiosk` | Customer self-service — check in, timer, snacks  |
-| `/admin` | Staff dashboard — sessions, snacks, pricing, summary |
+| Route          | What it is                                           |
+| -------------- | ---------------------------------------------------- |
+| `/`            | Landing page linking to both apps                    |
+| `/kiosk`       | Customer self-service — check in, timer, snacks      |
+| `/admin`       | Staff dashboard — sessions, snacks, pricing, summary |
+| `/admin/login` | Staff sign-in                                        |
+
+`/admin` needs a login; the kiosk never does. In `json` mode the seeded accounts
+are `admin` / `admin1234` and `staff` / `staff1234`.
 
 ## Commands
 
@@ -56,8 +60,9 @@ when it is not.
 The switch lives entirely in [lib/supabase/client.ts](lib/supabase/client.ts)
 and [lib/supabase/server.ts](lib/supabase/server.ts) — in `json` mode they hand
 back a stand-in ([lib/mock/](lib/mock/)) that reimplements the slice of the
-`supabase-js` surface this app uses. Components call `createClient()` and cannot
-tell the difference, so **don't import from `lib/mock/` in a component**.
+`supabase-js` surface this app uses, including `rpc()`. Components call
+`createClient()` and cannot tell the difference, so **don't import from
+`lib/mock/` in a component**.
 
 The mock store mirrors the real constraints (unique active names, cascading
 foreign keys, range checks) so error paths behave the same in both modes.
@@ -72,7 +77,69 @@ curl localhost:3000/api/mock/meta                 # revisions + row counts
 curl localhost:3000/api/mock/sessions             # or snacks, session_snacks, pricing_config
 curl 'localhost:3000/api/mock/snacks?limit=5&select=id,name'
 curl -X POST localhost:3000/api/mock/meta -d '{"action":"reset"}'   # re-seed
+
+# Database functions mirror PostgREST's /rpc/<fn>
+curl -X POST localhost:3000/api/mock/rpc/verify_login \
+  -H 'Content-Type: application/json' -d '{"p_username":"admin","p_password":"admin1234"}'
 ```
+
+`app_users` is deliberately *not* served here — it returns `42501`, matching the
+RLS-with-no-policy it has in `db` mode.
+
+## Admin authentication
+
+Staff accounts live in `app_users` (`scripts/007_create_app_users.sql`) with one
+of two roles:
+
+| Role    | Sessions | Snacks | Pricing | Summary + history |
+| ------- | :------: | :----: | :-----: | :---------------: |
+| `admin` |    ✅    |   ✅   |   ✅    |        ✅         |
+| `staff` |    ✅    |   ✅   |   —     |        —          |
+
+How it fits together:
+
+- `POST /api/admin/login` verifies the credentials and sets `admin_session`, an
+  httpOnly cookie holding an HMAC-signed `{ sub, username, role, exp }` payload.
+  It expires after 12 hours — one shift.
+- [proxy.ts](proxy.ts) gates every `/admin` path on that cookie and redirects to
+  `/admin/login`. (Next 16 renamed the `middleware.ts` convention to `proxy.ts`.)
+  The dashboard layout and page re-check the session rather than trusting the
+  proxy alone.
+- The role decides which tabs [admin-dashboard.tsx](components/admin/admin-dashboard.tsx)
+  renders. Staff never receive the pricing or summary markup at all.
+- Sign out is `POST /api/admin/logout`.
+
+Set `ADMIN_SESSION_SECRET` to a long random string. It is optional in
+development (a fixed insecure fallback keeps a clean checkout booting) and
+**required in production** — the app throws without it. Rotating it signs
+everyone out.
+
+### What this does and does not protect
+
+`app_users` is the one table the anon key cannot reach: RLS is on with **no
+policy**, and table grants are revoked. Logins go through `verify_login()`, a
+`SECURITY DEFINER` function that compares the bcrypt hash inside Postgres and
+returns only the id, username and role — password hashes never cross the wire.
+
+Everything else is unchanged: `sessions`, `snacks`, `pricing_config` and
+`session_snacks` still have `USING (true) WITH CHECK (true)` policies, because
+the kiosk is unauthenticated and ships the anon key to every browser. **So the
+role split is a UI boundary, not a security boundary.** It stops a staff member
+from casually changing prices or reading takings; it does not stop someone who
+opens devtools and calls Supabase directly. Enforcing roles in the database
+would mean moving to Supabase Auth so RLS policies can see who is calling.
+
+### Managing accounts
+
+There is no user-management UI. Add and change accounts from the Supabase SQL
+editor — `scripts/007_create_app_users.sql` ends with copy-paste snippets:
+
+```sql
+INSERT INTO app_users (username, password_hash, role)
+VALUES ('nina', extensions.crypt('their-password', extensions.gen_salt('bf')), 'staff');
+```
+
+**Change the two starter passwords before this goes anywhere real.**
 
 ## Billing rule
 
@@ -108,12 +175,12 @@ Currency is Thai baht, written as a literal `฿` prefix with `.toFixed(2)`.
 Supabase Postgres. Migrations live in [scripts/](scripts/) as numbered `.sql`
 files applied **manually through the Supabase SQL editor** — there is no
 migration tool and no tracking table. A schema change is a new `NNN_*.sql` file
-(next: `007_`), written idempotently (`IF NOT EXISTS`) because they get
+(next: `008_`), written idempotently (`IF NOT EXISTS`) because they get
 re-pasted. Mirror any change in [lib/mock/store.ts](lib/mock/store.ts) and
 [lib/mock/seed.ts](lib/mock/seed.ts) or `json` mode drifts from `db` mode.
 
 Tables: `pricing_config` (single row), `snacks`, `sessions`, `session_snacks`
-(junction). Notable details:
+(junction), `app_users` (staff accounts). Notable details:
 
 - `sessions` accreted columns over several migrations — treat `time_in`/`time_out`
   as authoritative where present and fall back to `started_at`/`ended_at`.
@@ -123,10 +190,12 @@ Tables: `pricing_config` (single row), `snacks`, `sessions`, `session_snacks`
   history but not among active sessions. Both insert paths pre-check for
   duplicates *and* catch Postgres error `23505` — keep both if you add a third.
 
-RLS is enabled but every table has an `USING (true) WITH CHECK (true)` policy, so
-the anon key has full read/write. This is deliberate — the kiosk is
-unauthenticated and there is no service-role key anywhere. **Nothing sensitive
-belongs in this database.**
+RLS is enabled and every table *except `app_users`* has an
+`USING (true) WITH CHECK (true)` policy, so the anon key has full read/write on
+them. This is deliberate — the kiosk is unauthenticated and there is no
+service-role key anywhere. **Nothing sensitive belongs in those tables.**
+`app_users` is the exception and is reachable only through `verify_login()`; see
+[Admin authentication](#admin-authentication).
 
 ## Architecture
 
@@ -138,7 +207,12 @@ and passes them to a `"use client"` shell
 `fallbackData`. The shell subscribes to Realtime `postgres_changes` and calls
 the matching `mutate()` on any event — no revalidation interval. Mutations are
 direct `supabase.from(...)` calls from client components; there are no server
-actions, and the only route handlers are the mock API under `app/api/mock/`.
+actions. The route handlers are the mock API under `app/api/mock/` (inactive in
+`db` mode) and the login/logout pair under `app/api/admin/`.
+
+`/admin` is split into a `(dashboard)` route group carrying the header chrome
+and session check, so [app/admin/login/page.tsx](app/admin/login/page.tsx)
+renders standalone.
 
 The kiosk has **no login**. A customer's session identity is the
 `boardGameSessionId` key in `localStorage`; clearing it or switching devices

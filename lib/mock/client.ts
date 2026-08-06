@@ -7,6 +7,7 @@ import {
   type QueryResult,
   type Revisions,
   type Row,
+  type RpcRequest,
   type TableName,
 } from "./types"
 
@@ -45,6 +46,35 @@ async function browserExecutor(request: QueryRequest): Promise<QueryResult> {
     return {
       data: null,
       error: mockError("MOCK_BAD_RESPONSE", `Unexpected response from ${url.pathname}`),
+    }
+  } catch (error) {
+    return {
+      data: null,
+      error: mockError(
+        "MOCK_FETCH_FAILED",
+        error instanceof Error ? error.message : "Mock API request failed",
+      ),
+    }
+  }
+}
+
+async function browserRpcExecutor(request: RpcRequest): Promise<QueryResult> {
+  const url = `${API_BASE}/rpc/${request.fn}`
+
+  try {
+    const response = await fetch(url, {
+      method: "POST",
+      cache: "no-store",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(request.args ?? {}),
+    })
+    const body: unknown = await response.json()
+    if (body && typeof body === "object" && "data" in body) {
+      return body as QueryResult
+    }
+    return {
+      data: null,
+      error: mockError("MOCK_BAD_RESPONSE", `Unexpected response from ${url}`),
     }
   } catch (error) {
     return {
@@ -211,6 +241,6 @@ let cached: ReturnType<typeof createMockClient> | null = null
 
 /** Memoized so every component shares one polling loop. */
 export function createMockBrowserClient() {
-  cached ??= createMockClient(browserExecutor, realtime)
+  cached ??= createMockClient(browserExecutor, realtime, browserRpcExecutor)
   return cached
 }

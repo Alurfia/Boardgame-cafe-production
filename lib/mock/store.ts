@@ -2,11 +2,13 @@ import { randomUUID } from "node:crypto"
 import fs from "node:fs/promises"
 import path from "node:path"
 
+import { verifyPassword } from "./password"
 import { createSeed } from "./seed"
 import {
   CASCADES,
   RELATIONS,
   TABLE_NAMES,
+  isPrivateTable,
   mockError,
   type Filter,
   type MockError,
@@ -15,6 +17,7 @@ import {
   type QueryResult,
   type Revisions,
   type Row,
+  type RpcRequest,
   type SingleMode,
   type TableName,
 } from "./types"
@@ -110,6 +113,7 @@ const NUMERIC_COLUMNS: Record<TableName, string[]> = {
     "used_minutes",
   ],
   session_snacks: ["quantity", "price_at_time"],
+  app_users: [],
 }
 
 const TABLE_DEFAULTS: Record<TableName, Row> = {
@@ -128,6 +132,7 @@ const TABLE_DEFAULTS: Record<TableName, Row> = {
     total_cost: null,
   },
   session_snacks: { quantity: 1 },
+  app_users: { role: "staff", is_active: true },
 }
 
 const REQUIRED_COLUMNS: Record<TableName, string[]> = {
@@ -135,6 +140,7 @@ const REQUIRED_COLUMNS: Record<TableName, string[]> = {
   snacks: ["name", "price"],
   sessions: ["customer_name"],
   session_snacks: ["session_id", "snack_id", "price_at_time"],
+  app_users: ["username", "password_hash"],
 }
 
 /** Foreign keys: `column` in this table must reference an existing row. */
@@ -165,6 +171,7 @@ function applyDefaults(table: TableName, values: Row): Row {
 
   if (table === "sessions" && row.started_at == null) row.started_at = now
   if (table === "pricing_config" && row.updated_at == null) row.updated_at = now
+  if (table === "app_users" && row.updated_at == null) row.updated_at = now
 
   return coerceNumerics(table, row)
 }
@@ -219,6 +226,36 @@ function validateRow(
     }
   }
 
+  if (table === "app_users") {
+    const role = row.role
+    if (role !== "admin" && role !== "staff") {
+      return mockError(
+        "23514",
+        'new row for relation "app_users" violates check constraint "app_users_role_check"',
+      )
+    }
+  }
+
+  return null
+}
+
+/**
+ * `007_create_app_users.sql`: one account per case-insensitive, trimmed
+ * username.
+ */
+function checkUsernameUniqueness(rows: Row[]): MockError | null {
+  const seen = new Set<string>()
+  for (const row of rows) {
+    const key = normalizeName(row.username)
+    if (seen.has(key)) {
+      return mockError(
+        "23505",
+        'duplicate key value violates unique constraint "app_users_unique_username_idx"',
+        `Key (lower(btrim(username)))=(${key}) already exists.`,
+      )
+    }
+    seen.add(key)
+  }
   return null
 }
 
@@ -433,6 +470,20 @@ export async function runQuery(request: QueryRequest): Promise<QueryResult> {
   const state = await getState()
   const { table } = request
 
+  // `app_users` has RLS with no policy in `db` mode, so the anon key gets
+  // nothing back. Refuse here too, or `json` mode would happily serve password
+  // hashes over `/api/mock/app_users`.
+  if (isPrivateTable(table)) {
+    return {
+      data: null,
+      error: mockError(
+        "42501",
+        `permission denied for table ${table}`,
+        "Row-level security is enabled and no policy grants access. Use an RPC instead.",
+      ),
+    }
+  }
+
   try {
     switch (request.action) {
       case "select": {
@@ -461,6 +512,11 @@ export async function runQuery(request: QueryRequest): Promise<QueryResult> {
           if (error) return { data: null, error }
         }
 
+        if (table === "app_users") {
+          const error = checkUsernameUniqueness([...state.tables.app_users, ...prepared])
+          if (error) return { data: null, error }
+        }
+
         state.tables[table].push(...prepared)
         bump(state, table)
         persist(state)
@@ -484,6 +540,14 @@ export async function runQuery(request: QueryRequest): Promise<QueryResult> {
             (row) => !targets.some((target) => target.id === row.id),
           )
           const error = checkActiveNameUniqueness([...untouched, ...updated])
+          if (error) return { data: null, error }
+        }
+
+        if (table === "app_users") {
+          const untouched = state.tables.app_users.filter(
+            (row) => !targets.some((target) => target.id === row.id),
+          )
+          const error = checkUsernameUniqueness([...untouched, ...updated])
           if (error) return { data: null, error }
         }
 
@@ -521,6 +585,62 @@ export async function runQuery(request: QueryRequest): Promise<QueryResult> {
         return {
           data: null,
           error: mockError("MOCK_BAD_REQUEST", `Unsupported action: ${String(request.action)}`),
+        }
+    }
+  } catch (error) {
+    return {
+      data: null,
+      error: mockError(
+        "MOCK_INTERNAL",
+        error instanceof Error ? error.message : "Unknown mock database error",
+      ),
+    }
+  }
+}
+
+/* -------------------------------------------------------------------------- */
+/* Database functions                                                          */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * `verify_login(p_username, p_password)` from `scripts/007_create_app_users.sql`.
+ * Returns a one-row array on success and an empty array otherwise — PostgREST
+ * shapes a `RETURNS TABLE` function that way, and never leaks whether it was the
+ * username or the password that was wrong.
+ */
+async function verifyLogin(args: Record<string, unknown>): Promise<QueryResult> {
+  const state = await getState()
+  const username = normalizeName(args.p_username)
+  const password = String(args.p_password ?? "")
+
+  if (!username || !password) return { data: [], error: null }
+
+  const user = state.tables.app_users.find(
+    (row) => row.is_active !== false && normalizeName(row.username) === username,
+  )
+
+  if (!user || !verifyPassword(password, String(user.password_hash ?? ""))) {
+    return { data: [], error: null }
+  }
+
+  return {
+    data: [{ id: user.id, username: user.username, role: user.role }],
+    error: null,
+  }
+}
+
+export async function runRpc(request: RpcRequest): Promise<QueryResult> {
+  try {
+    switch (request.fn) {
+      case "verify_login":
+        return await verifyLogin(request.args ?? {})
+      default:
+        return {
+          data: null,
+          error: mockError(
+            "42883",
+            `function public.${String(request.fn)} does not exist`,
+          ),
         }
     }
   } catch (error) {

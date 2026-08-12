@@ -39,6 +39,8 @@ interface SeedSessionSpec {
   startedMinutesAgo: number
   /** Minutes before "now" the session ended; omit to leave it active. */
   endedMinutesAgo?: number
+  /** Closed by the nightly sweep rather than by a person. */
+  autoCheckedOut?: boolean
   /** Snack name -> quantity. */
   snacks?: Record<string, number>
 }
@@ -48,7 +50,8 @@ const SEED_SESSIONS: SeedSessionSpec[] = [
   { name: "Nina", members: 3, startedMinutesAgo: 105, snacks: { Coffee: 2, Cookie: 1 } },
   // Today.
   { name: "Bank", members: 2, startedMinutesAgo: 300, endedMinutesAgo: 120, snacks: { Soda: 2, Chips: 1 } },
-  { name: "Ploy", members: 4, startedMinutesAgo: 480, endedMinutesAgo: 360, snacks: { Tea: 4 } },
+  // Walked out without checking out, so the nightly sweep closed it.
+  { name: "Ploy", members: 4, startedMinutesAgo: 480, endedMinutesAgo: 360, autoCheckedOut: true, snacks: { Tea: 4 } },
   // Earlier days, so the summary charts have something to draw.
   { name: "Somchai", members: 2, startedMinutesAgo: 1440 + 240, endedMinutesAgo: 1440 + 60, snacks: { Sandwich: 2 } },
   { name: "Mook", members: 5, startedMinutesAgo: 5 * 1440 + 300, endedMinutesAgo: 5 * 1440, snacks: { Coffee: 3, Chips: 2 } },
@@ -128,6 +131,7 @@ export function createSeed(now: number = Date.now()): Record<TableName, Row[]> {
       time_out: endedAt === null ? null : iso(endedAt),
       used_hours: 0,
       used_minutes: 0,
+      auto_checked_out: endedAt !== null && spec.autoCheckedOut === true,
       base_fee: BASE_FEE,
       hourly_rate: HOURLY_RATE,
       total_cost: null,

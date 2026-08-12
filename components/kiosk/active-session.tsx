@@ -7,8 +7,10 @@ import {
   calculateBillableHours,
   calculateFeePerPerson,
   calculateSessionTotal,
+  resolveSessionStart,
 } from "@/lib/billing"
 import { toast } from "sonner"
+import { useKioskError } from "./use-kiosk-error"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
@@ -27,11 +29,18 @@ interface ActiveSessionProps {
 
 export function ActiveSession({ session, snacks, pricing, onUpdate }: ActiveSessionProps) {
   const [elapsed, setElapsed] = useState({ hours: 0, minutes: 0, seconds: 0 })
+  /**
+   * A start time in the future, or one that will not parse, would otherwise sit
+   * frozen at 00:00 and read as a broken timer rather than a bad check-in time.
+   * `active-timer.tsx` flags the same condition on the admin side.
+   */
+  const [startNotReached, setStartNotReached] = useState(false)
   const [estimatedCost, setEstimatedCost] = useState(0)
   /** The time charge one member owes, snacks excluded. */
   const [feePerPerson, setFeePerPerson] = useState(0)
   const [sessionSnacks, setSessionSnacks] = useState<(SessionSnack & { snack_name: string })[]>([])
   const [addingSnackId, setAddingSnackId] = useState<string | null>(null)
+  const { showError, errorDialog } = useKioskError()
 
   const fetchSessionSnacks = useCallback(async () => {
     const { data } = await supabase
@@ -69,9 +78,16 @@ export function ActiveSession({ session, snacks, pricing, onUpdate }: ActiveSess
 
   useEffect(() => {
     function update() {
-      const now = new Date()
-      const started = new Date(session.started_at)
-      const diffMs = Math.max(0, now.getTime() - started.getTime())
+      const started = resolveSessionStart(session).getTime()
+
+      if (Number.isNaN(started)) {
+        setStartNotReached(true)
+        return
+      }
+
+      const diffMs = Date.now() - started
+      setStartNotReached(diffMs < 0)
+      if (diffMs < 0) return
 
       const hours = Math.floor(diffMs / (1000 * 60 * 60))
       const minutes = Math.floor((diffMs % (1000 * 60 * 60)) / (1000 * 60))
@@ -80,9 +96,10 @@ export function ActiveSession({ session, snacks, pricing, onUpdate }: ActiveSess
     }
 
     function updateCost() {
-      const now = new Date()
-      const started = new Date(session.started_at)
-      const diffMs = Math.max(0, now.getTime() - started.getTime())
+      const started = resolveSessionStart(session).getTime()
+      // The estimate still clamps — nobody is billed for a negative duration —
+      // but `update` surfaces the bad timestamp instead of hiding it.
+      const diffMs = Number.isNaN(started) ? 0 : Math.max(0, Date.now() - started)
 
       const billableHours = calculateBillableHours(diffMs, pricing.max_billable_hours)
       const snackTotal = sessionSnacks.reduce(
@@ -141,7 +158,7 @@ export function ActiveSession({ session, snacks, pricing, onUpdate }: ActiveSess
       fetchSessionSnacks()
       onUpdate()
     } catch {
-      toast.error("Failed to add snack")
+      showError("Failed to add snack", "Please try again, or let staff know.")
     } finally {
       setAddingSnackId(null)
     }
@@ -165,7 +182,7 @@ export function ActiveSession({ session, snacks, pricing, onUpdate }: ActiveSess
       fetchSessionSnacks()
       onUpdate()
     } catch {
-      toast.error("Failed to update snack")
+      showError("Failed to update snack", "Please try again, or let staff know.")
     }
   }
 
@@ -211,13 +228,26 @@ export function ActiveSession({ session, snacks, pricing, onUpdate }: ActiveSess
             <p className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground sm:text-xs">
               Time Playing
             </p>
-            <p className="timer-display text-2xl font-bold tracking-tight text-foreground sm:text-4xl">
-              {String(elapsed.hours).padStart(2, "0")}:
-              {String(elapsed.minutes).padStart(2, "0")}
-            </p>
-            <p className="font-mono text-xs text-muted-foreground">
-              :{String(elapsed.seconds).padStart(2, "0")}
-            </p>
+            {startNotReached ? (
+              <>
+                <p className="timer-display text-2xl font-bold tracking-tight text-destructive sm:text-4xl">
+                  --:--
+                </p>
+                <p className="text-center text-[10px] leading-tight text-destructive sm:text-xs">
+                  Check-in time looks wrong. Please ask staff.
+                </p>
+              </>
+            ) : (
+              <>
+                <p className="timer-display text-2xl font-bold tracking-tight text-foreground sm:text-4xl">
+                  {String(elapsed.hours).padStart(2, "0")}:
+                  {String(elapsed.minutes).padStart(2, "0")}
+                </p>
+                <p className="font-mono text-xs text-muted-foreground">
+                  :{String(elapsed.seconds).padStart(2, "0")}
+                </p>
+              </>
+            )}
           </CardContent>
         </Card>
 
@@ -367,6 +397,8 @@ export function ActiveSession({ session, snacks, pricing, onUpdate }: ActiveSess
           </div>
         </CardContent>
       </Card>
+
+      {errorDialog}
     </div>
   )
 }

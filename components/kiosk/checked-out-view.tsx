@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react"
 import { createClient } from "@/lib/supabase/client"
-import { calculateBillableHours } from "@/lib/billing"
+import { calculateBillableHours, resolveSessionStart } from "@/lib/billing"
 import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { CheckCircle2, Clock, ShoppingBag, Sparkles, Users } from "lucide-react"
@@ -21,8 +21,8 @@ export function CheckedOutView({ session, pricing, onNewSession }: CheckedOutVie
     { id: string; name: string; quantity: number; priceAtTime: number }[]
   >([])
 
-  const started = new Date(session.started_at)
-  const ended = session.ended_at ? new Date(session.ended_at) : new Date()
+  const started = resolveSessionStart(session)
+  const ended = new Date(session.time_out || session.ended_at || Date.now())
   const durationMs = Math.max(0, ended.getTime() - started.getTime())
   const hours = Math.floor(durationMs / (1000 * 60 * 60))
   const minutes = Math.floor((durationMs % (1000 * 60 * 60)) / (1000 * 60))

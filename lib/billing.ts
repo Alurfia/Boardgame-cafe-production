@@ -21,6 +21,19 @@ export const DEFAULT_MAX_BILLABLE_HOURS = 5
  */
 export const ESTIMATE_REFRESH_MS = 60 * 1000
 
+/**
+ * Where a session's clock starts. `time_in` is authoritative where present and
+ * `started_at` is the fallback for rows predating `005_*.sql` — the admin and
+ * history views have always resolved it this way, so the kiosk must too or the
+ * two disagree after a staff member corrects a check-in time.
+ */
+export function resolveSessionStart(session: {
+  time_in?: string | null
+  started_at: string
+}): Date {
+  return new Date(session.time_in || session.started_at)
+}
+
 function normalizeMaxHours(maxBillableHours: number | null | undefined): number {
   const value = Number(maxBillableHours)
   return Number.isFinite(value) && value > 0 ? value : DEFAULT_MAX_BILLABLE_HOURS

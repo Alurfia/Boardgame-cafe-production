@@ -123,10 +123,10 @@ const TABLE_DEFAULTS: Record<TableName, Row> = {
     member_count: 1,
     status: "active",
     ended_at: null,
-    time_in: null,
     time_out: null,
     used_hours: 0,
     used_minutes: 0,
+    auto_checked_out: false,
     base_fee: 5,
     hourly_rate: 3,
     total_cost: null,
@@ -169,7 +169,10 @@ function applyDefaults(table: TableName, values: Row): Row {
   row.id = values.id ?? randomUUID()
   row.created_at = values.created_at ?? now
 
+  // Both default to now() in Postgres (001 and 008), so the check-in paths can
+  // omit them and let the server own the clock.
   if (table === "sessions" && row.started_at == null) row.started_at = now
+  if (table === "sessions" && row.time_in == null) row.time_in = now
   if (table === "pricing_config" && row.updated_at == null) row.updated_at = now
   if (table === "app_users" && row.updated_at == null) row.updated_at = now
 

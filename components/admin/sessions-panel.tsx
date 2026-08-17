@@ -21,7 +21,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
-import { Clock, DollarSign, LogOut, ShoppingBag, Users, Edit2, UserPlus, CheckCircle2, Plus, Trash2 } from "lucide-react"
+import { Clock, DollarSign, LogOut, ShoppingBag, Users, Edit2, UserPlus, UserMinus, CheckCircle2, Plus, Minus, Trash2 } from "lucide-react"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { SessionSnacksList } from "./session-snacks-list"
@@ -43,6 +43,15 @@ interface CustomFinishedSnackRow {
   name: string
   price: string
   quantity: string
+}
+
+/** A parent session's snack line, as offered for splitting in a partial checkout. */
+interface PartialSnackRow {
+  id: string
+  snack_id: string
+  name: string
+  quantity: number
+  price_at_time: number
 }
 
 /**
@@ -92,6 +101,12 @@ export function SessionsPanel({
   const [checkoutSnackTotal, setCheckoutSnackTotal] = useState(0)
   const [checkoutSnackItems, setCheckoutSnackItems] = useState<{id: string; name: string; quantity: number; price_at_time: number}[]>([])
   const [isCheckingOut, setIsCheckingOut] = useState(false)
+  const [partialSession, setPartialSession] = useState<Session | null>(null)
+  const [partialMemberCount, setPartialMemberCount] = useState("1")
+  const [partialSnackRows, setPartialSnackRows] = useState<PartialSnackRow[]>([])
+  const [partialTakeQty, setPartialTakeQty] = useState<Record<string, number>>({})
+  const [partialBillableHours, setPartialBillableHours] = useState(0)
+  const [isPartialCheckingOut, setIsPartialCheckingOut] = useState(false)
   const [snackViewSession, setSnackViewSession] = useState<Session | null>(null)
   const [editMembersSession, setEditMembersSession] = useState<Session | null>(null)
   const [editMembersCount, setEditMembersCount] = useState("1")
@@ -122,6 +137,40 @@ export function SessionsPanel({
   const parsedCheckoutMembers = parseInt(checkoutMemberCount, 10)
   const checkoutMembersInvalid = !Number.isFinite(parsedCheckoutMembers) || parsedCheckoutMembers < 1
   const checkoutMembersForCalc = checkoutMembersInvalid ? 1 : parsedCheckoutMembers
+
+  // A partial checkout takes some of the table with it, so at least one member
+  // has to stay behind — leaving with everybody is a plain checkout.
+  const partialParentMembers = partialSession ? partialSession.member_count || 1 : 1
+  const parsedPartialMembers = parseInt(partialMemberCount, 10)
+  const partialMembersInvalid =
+    !Number.isFinite(parsedPartialMembers) ||
+    parsedPartialMembers < 1 ||
+    parsedPartialMembers >= partialParentMembers
+  const partialMembersForCalc = partialMembersInvalid ? 1 : parsedPartialMembers
+  const partialTakenItems = partialSnackRows
+    .map((row) => ({ ...row, take: partialTakeQty[row.id] ?? 0 }))
+    .filter((row) => row.take > 0)
+  const partialSnackTotal = roundCurrency(
+    partialTakenItems.reduce((sum, row) => sum + row.take * row.price_at_time, 0),
+  )
+  const partialFeePerPerson = partialSession
+    ? calculateFeePerPerson({
+        baseFee: partialSession.base_fee,
+        hourlyRate: partialSession.hourly_rate,
+        billableHours: partialBillableHours,
+      })
+    : 0
+  const partialTotal = partialSession
+    ? calculateSessionTotal({
+        // The session's own snapshot, never current pricing — editing pricing
+        // must not reprice a table that is already playing.
+        baseFee: partialSession.base_fee,
+        hourlyRate: partialSession.hourly_rate,
+        billableHours: partialBillableHours,
+        memberCount: partialMembersForCalc,
+        snackTotal: partialSnackTotal,
+      })
+    : 0
 
   const parsedEditMembers = parseInt(editMembersCount, 10)
   const editMembersInvalid = !Number.isFinite(parsedEditMembers) || parsedEditMembers < 1
@@ -219,6 +268,17 @@ export function SessionsPanel({
     }, ESTIMATE_REFRESH_MS)
     return () => clearInterval(interval)
   }, [checkoutSession, checkoutMembersForCalc, checkoutSnackTotal, getBillableHours])
+
+  // Same for the partial dialog — everything else there is derived, so only the
+  // clock needs to be pushed forward.
+  useEffect(() => {
+    if (!partialSession) return
+    const interval = setInterval(() => {
+      const diffMs = Math.max(0, Date.now() - getSessionTimeInDate(partialSession).getTime())
+      setPartialBillableHours(getBillableHours(diffMs))
+    }, ESTIMATE_REFRESH_MS)
+    return () => clearInterval(interval)
+  }, [partialSession, getBillableHours])
 
   // Filter to only show today's completed sessions
   const today = new Date()
@@ -340,6 +400,181 @@ export function SessionsPanel({
     } finally {
       setIsCheckingOut(false)
       setCheckoutSession(null)
+    }
+  }
+
+  async function handlePartialCheckout(session: Session) {
+    if ((session.member_count || 1) <= 1) return
+
+    const diffMs = Math.max(0, Date.now() - getSessionTimeInDate(session).getTime())
+
+    const { data: sessionSnacksRaw } = await supabase
+      .from("session_snacks")
+      // snack_id so the departing quantities can be copied onto the child row
+      .select("id, snack_id, quantity, price_at_time, snacks(name)")
+      .eq("session_id", session.id)
+
+    const rows: PartialSnackRow[] = ((sessionSnacksRaw ?? []) as any[]).map((s) => ({
+      id: s.id as string,
+      snack_id: s.snack_id as string,
+      name: (s.snacks as any)?.name ?? "Unknown",
+      quantity: s.quantity as number,
+      price_at_time: Number(s.price_at_time),
+    }))
+
+    setPartialBillableHours(getBillableHours(diffMs))
+    setPartialSnackRows(rows)
+    setPartialTakeQty({})
+    setPartialMemberCount("1")
+    setPartialSession(session)
+  }
+
+  function adjustPartialTake(row: PartialSnackRow, delta: number) {
+    setPartialTakeQty((prev) => ({
+      ...prev,
+      [row.id]: Math.min(row.quantity, Math.max(0, (prev[row.id] ?? 0) + delta)),
+    }))
+  }
+
+  /**
+   * Splits a `checked_out` child session off an active one: the departing
+   * members and their share of the snacks are billed and frozen, the parent
+   * keeps its id, its `time_in` and the remainder.
+   *
+   * There is no transaction — every mutation in this app is a direct client
+   * call — so the writes are ordered such that a failure is recoverable, and
+   * the second half reports honestly when it is not.
+   */
+  async function confirmPartialCheckout() {
+    if (!partialSession) return
+    if (partialMembersInvalid) {
+      toast.error(`Must be between 1 and ${partialParentMembers - 1} people`)
+      return
+    }
+
+    const parent = partialSession
+    const leaving = partialMembersForCalc
+    const takenItems = partialTakenItems
+    const endedAtIso = new Date().toISOString()
+    const startedAt = getSessionTimeInDate(parent)
+    const startedAtIso = startedAt.toISOString()
+    const elapsedMs = Math.max(0, new Date(endedAtIso).getTime() - startedAt.getTime())
+    const billableHours = getBillableHours(elapsedMs)
+    const snackTotal = roundCurrency(
+      takenItems.reduce((sum, row) => sum + row.take * row.price_at_time, 0),
+    )
+    const total = calculateSessionTotal({
+      baseFee: parent.base_fee,
+      hourlyRate: parent.hourly_rate,
+      billableHours,
+      memberCount: leaving,
+      snackTotal,
+    })
+
+    setIsPartialCheckingOut(true)
+
+    // The kiosk can order or cancel snacks while this dialog sits open, so never
+    // move more than the parent still holds.
+    const { data: currentRaw, error: currentError } = await supabase
+      .from("session_snacks")
+      .select("id, quantity")
+      .eq("session_id", parent.id)
+
+    if (currentError) {
+      toast.error("Could not re-check the snacks — nothing was charged")
+      setIsPartialCheckingOut(false)
+      return
+    }
+
+    const currentQtyById = new Map(
+      ((currentRaw ?? []) as any[]).map((s) => [s.id as string, s.quantity as number]),
+    )
+    if (takenItems.some((row) => (currentQtyById.get(row.id) ?? 0) < row.take)) {
+      toast.error("Snacks changed while this dialog was open — please redo the split")
+      setIsPartialCheckingOut(false)
+      return
+    }
+
+    let childId: string | null = null
+    try {
+      // 1. The child carries the departing share. Reusing the parent's name is
+      //    legal: `006`'s unique index only covers active rows.
+      const { data: child, error: childError } = await supabase
+        .from("sessions")
+        .insert({
+          customer_name: parent.customer_name,
+          member_count: leaving,
+          status: "checked_out",
+          started_at: startedAtIso,
+          time_in: startedAtIso,
+          ended_at: endedAtIso,
+          time_out: endedAtIso,
+          used_hours: Math.floor(elapsedMs / (60 * 60 * 1000)),
+          used_minutes: Math.floor((elapsedMs % (60 * 60 * 1000)) / (60 * 1000)),
+          base_fee: parent.base_fee,
+          hourly_rate: parent.hourly_rate,
+          total_cost: total,
+          auto_checked_out: false,
+          parent_session_id: parent.id,
+        })
+        .select("id")
+        .single()
+
+      if (childError) throw childError
+      childId = child.id as string
+
+      // 2. Copy the departing quantities across at the same snapshotted price.
+      for (const row of takenItems) {
+        const { error } = await supabase.from("session_snacks").insert({
+          session_id: childId,
+          snack_id: row.snack_id,
+          quantity: row.take,
+          price_at_time: row.price_at_time,
+        })
+        if (error) throw error
+      }
+    } catch {
+      // Nothing has been taken off the parent yet, so dropping the child undoes
+      // the whole thing — the cascade takes any copies with it.
+      if (childId) await supabase.from("sessions").delete().eq("id", childId)
+      toast.error("Partial checkout failed — nothing was charged")
+      setIsPartialCheckingOut(false)
+      return
+    }
+
+    // Past here the child bill is real and frozen. If reducing the parent fails
+    // it is holding snacks or members that have already been paid for — say so
+    // rather than reporting a failure that did not happen.
+    try {
+      // 3. Take the departing quantities off the parent.
+      for (const row of takenItems) {
+        const remaining = row.quantity - row.take
+        const { error } =
+          remaining <= 0
+            ? await supabase.from("session_snacks").delete().eq("id", row.id)
+            : await supabase.from("session_snacks").update({ quantity: remaining }).eq("id", row.id)
+        if (error) throw error
+      }
+
+      // 4. And the departing members.
+      const { error: parentError } = await supabase
+        .from("sessions")
+        .update({ member_count: partialParentMembers - leaving })
+        .eq("id", parent.id)
+      if (parentError) throw parentError
+
+      toast.success(
+        `${parent.customer_name}: ${leaving} of ${partialParentMembers} checked out — ฿${total.toFixed(2)}`,
+      )
+    } catch {
+      toast.error(
+        `เก็บเงินแล้ว ฿${total.toFixed(2)} แต่ session ของ ${parent.customer_name} อาจยังค้าง snack หรือจำนวนคนเดิมอยู่ — กรุณาตรวจสอบ`,
+        { duration: 10000 },
+      )
+    } finally {
+      setIsPartialCheckingOut(false)
+      setPartialSession(null)
+      onUpdate()
     }
   }
 
@@ -881,6 +1116,21 @@ export function SessionsPanel({
                       Snacks
                     </Button>
                     <Button
+                      variant="outline"
+                      size="sm"
+                      disabled={(session.member_count || 1) <= 1}
+                      title={
+                        (session.member_count || 1) <= 1
+                          ? "มีคนเดียว — ใช้ Checkout"
+                          : "เช็คเอาท์บางคนพร้อม snack บางส่วน"
+                      }
+                      onClick={() => handlePartialCheckout(session)}
+                      className="flex-1 border-border/50 bg-background text-xs transition-colors hover:bg-secondary sm:flex-none"
+                    >
+                      <UserMinus className="mr-1.5 h-3.5 w-3.5" />
+                      Partial
+                    </Button>
+                    <Button
                       size="sm"
                       onClick={() => handleCheckout(session)}
                       className="flex-1 gradient-primary text-xs text-primary-foreground shadow-sm transition-all hover:opacity-90 sm:flex-none"
@@ -993,9 +1243,27 @@ export function SessionsPanel({
                           ฿{Number(session.total_cost ?? 0).toFixed(2)}
                         </span>
                       </div>
-                      <Badge variant="secondary" className="ml-auto text-[10px] sm:ml-0">
-                        Completed
-                      </Badge>
+                      {session.auto_checked_out ? (
+                        <Badge
+                          variant="outline"
+                          className="ml-auto border-destructive/40 bg-destructive/10 text-[10px] text-destructive sm:ml-0"
+                          title="ระบบเช็คเอาท์ให้อัตโนมัติ — ยอดนี้ยังไม่มีคนยืนยัน"
+                        >
+                          Auto checkout
+                        </Badge>
+                      ) : session.parent_session_id ? (
+                        <Badge
+                          variant="outline"
+                          className="ml-auto border-primary/40 bg-primary/10 text-[10px] text-primary sm:ml-0"
+                          title="แยกออกมาจาก session อื่น — คนที่เหลือยังเล่นอยู่"
+                        >
+                          Partial
+                        </Badge>
+                      ) : (
+                        <Badge variant="secondary" className="ml-auto text-[10px] sm:ml-0">
+                          Completed
+                        </Badge>
+                      )}
                       <Button
                         variant="ghost"
                         size="icon"
@@ -1363,6 +1631,178 @@ export function SessionsPanel({
                 </span>
               ) : (
                 "Confirm Checkout"
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Partial Checkout Dialog */}
+      <Dialog
+        open={!!partialSession}
+        onOpenChange={(open) => !open && setPartialSession(null)}
+      >
+        <DialogContent className="mx-4 max-h-[90vh] max-w-md overflow-y-auto sm:mx-auto">
+          <div className="absolute inset-x-0 top-0 h-1 gradient-primary" />
+          <DialogHeader>
+            <DialogTitle className="text-foreground">Partial Checkout</DialogTitle>
+            <DialogDescription>
+              เก็บเงินบางคนของ{" "}
+              <span className="font-semibold text-foreground">
+                {partialSession?.customer_name}
+              </span>{" "}
+              — คนที่เหลือเล่นต่อโดยนับเวลาจากตอนเช็คอินเดิม
+            </DialogDescription>
+          </DialogHeader>
+
+          {/* Members leaving */}
+          <div className="flex flex-col gap-2">
+            <Label htmlFor="partial-member-count" className="text-sm font-medium">
+              Members checking out
+            </Label>
+            <Input
+              id="partial-member-count"
+              type="number"
+              min="1"
+              max={partialParentMembers - 1}
+              value={partialMemberCount}
+              onChange={(e) => setPartialMemberCount(e.target.value)}
+              className="h-10 border-border/50 bg-secondary/30"
+            />
+            {partialMembersInvalid ? (
+              <p className="text-xs text-destructive">
+                ต้องอยู่ระหว่าง 1 ถึง {partialParentMembers - 1} คน — ถ้าออกทั้งหมดให้ใช้ Checkout
+              </p>
+            ) : (
+              <p className="text-xs text-muted-foreground">
+                เหลืออยู่ต่อ {partialParentMembers - partialMembersForCalc} คน จาก {partialParentMembers} คน
+              </p>
+            )}
+          </div>
+
+          {/* Snacks leaving */}
+          <div className="flex flex-col gap-2">
+            <Label className="text-sm font-medium">Snacks checking out</Label>
+            {partialSnackRows.length === 0 ? (
+              <div className="flex flex-col items-center gap-2 rounded-xl border border-border/50 bg-secondary/10 py-6 text-center">
+                <div className="flex h-10 w-10 items-center justify-center rounded-full bg-muted">
+                  <ShoppingBag className="h-4 w-4 text-muted-foreground" />
+                </div>
+                <p className="text-xs text-muted-foreground">No snacks on this session.</p>
+              </div>
+            ) : (
+              <div className="flex flex-col gap-2">
+                {partialSnackRows.map((row) => {
+                  const take = partialTakeQty[row.id] ?? 0
+                  return (
+                    <div
+                      key={row.id}
+                      className="flex items-center justify-between rounded-xl border border-border bg-secondary/50 px-3 py-2.5"
+                    >
+                      <div>
+                        <p className="text-xs font-semibold text-foreground sm:text-sm">{row.name}</p>
+                        <p className="text-[10px] text-muted-foreground sm:text-xs">
+                          ฿{row.price_at_time.toFixed(2)}/ea · เหลือไว้ {row.quantity - take} จาก {row.quantity}
+                        </p>
+                      </div>
+                      <div className="flex items-center gap-1">
+                        <Button
+                          variant="outline"
+                          size="icon"
+                          className="h-7 w-7"
+                          disabled={take <= 0}
+                          onClick={() => adjustPartialTake(row, -1)}
+                        >
+                          <Minus className="h-3 w-3" />
+                        </Button>
+                        <span className="w-6 text-center text-sm font-semibold text-foreground">
+                          {take}
+                        </span>
+                        <Button
+                          variant="outline"
+                          size="icon"
+                          className="h-7 w-7"
+                          disabled={take >= row.quantity}
+                          onClick={() => adjustPartialTake(row, 1)}
+                        >
+                          <Plus className="h-3 w-3" />
+                        </Button>
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+            <p className="text-[10px] text-muted-foreground">
+              แยกได้เฉพาะ snack ที่สั่งไว้แล้ว — ถ้าต้องเพิ่มรายการใหม่ ให้ใช้ปุ่ม Snacks ก่อน
+            </p>
+          </div>
+
+          {/* Cost Breakdown */}
+          {partialSession && (
+            <div className="flex flex-col gap-2 rounded-xl border border-border/50 bg-secondary/10 p-4 text-sm">
+              <p className="text-xs font-bold uppercase tracking-wider text-foreground">Cost Breakdown</p>
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">Price per person</span>
+                <span className="font-medium text-foreground">
+                  ฿{partialFeePerPerson.toFixed(2)}/person
+                </span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">
+                  Session fee ({partialMembersForCalc} person{partialMembersForCalc > 1 ? "s" : ""})
+                </span>
+                <span className="font-medium text-foreground">
+                  ฿{(partialFeePerPerson * partialMembersForCalc).toFixed(2)}
+                </span>
+              </div>
+              {partialTakenItems.length > 0 && (
+                <>
+                  <p className="mt-1 text-xs font-bold uppercase tracking-wider text-foreground">Snacks</p>
+                  {partialTakenItems.map((row) => (
+                    <div key={row.id} className="flex justify-between">
+                      <span className="text-muted-foreground">
+                        {row.name} × {row.take}
+                      </span>
+                      <span className="font-medium text-foreground">
+                        ฿{(row.take * row.price_at_time).toFixed(2)}
+                      </span>
+                    </div>
+                  ))}
+                  <div className="flex justify-between border-t border-border/30 pt-1">
+                    <span className="text-muted-foreground">Snack total</span>
+                    <span className="font-medium text-foreground">฿{partialSnackTotal.toFixed(2)}</span>
+                  </div>
+                </>
+              )}
+              <div className="mt-1 border-t border-border/50 pt-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Total Amount</span>
+                  <span className="timer-display text-2xl font-bold text-primary">฿{partialTotal.toFixed(2)}</span>
+                </div>
+              </div>
+            </div>
+          )}
+          <DialogFooter className="flex-col gap-2 sm:flex-row">
+            <Button
+              variant="outline"
+              onClick={() => setPartialSession(null)}
+              className="w-full border-border/50 bg-background sm:w-auto"
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={confirmPartialCheckout}
+              disabled={isPartialCheckingOut || partialMembersInvalid}
+              className="w-full gradient-primary text-primary-foreground shadow-md transition-all hover:opacity-90 hover:shadow-lg sm:w-auto"
+            >
+              {isPartialCheckingOut ? (
+                <span className="flex items-center gap-2">
+                  <div className="h-4 w-4 animate-spin rounded-full border-2 border-primary-foreground border-t-transparent" />
+                  Processing...
+                </span>
+              ) : (
+                "Confirm Partial Checkout"
               )}
             </Button>
           </DialogFooter>

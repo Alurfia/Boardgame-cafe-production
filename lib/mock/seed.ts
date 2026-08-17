@@ -132,6 +132,7 @@ export function createSeed(now: number = Date.now()): Record<TableName, Row[]> {
       used_hours: 0,
       used_minutes: 0,
       auto_checked_out: endedAt !== null && spec.autoCheckedOut === true,
+      parent_session_id: null,
       base_fee: BASE_FEE,
       hourly_rate: HOURLY_RATE,
       total_cost: null,

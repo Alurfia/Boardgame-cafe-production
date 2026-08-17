@@ -127,6 +127,7 @@ const TABLE_DEFAULTS: Record<TableName, Row> = {
     used_hours: 0,
     used_minutes: 0,
     auto_checked_out: false,
+    parent_session_id: null,
     base_fee: 5,
     hourly_rate: 3,
     total_cost: null,
@@ -143,7 +144,14 @@ const REQUIRED_COLUMNS: Record<TableName, string[]> = {
   app_users: ["username", "password_hash"],
 }
 
-/** Foreign keys: `column` in this table must reference an existing row. */
+/**
+ * Foreign keys: `column` in this table must reference an existing row.
+ *
+ * `sessions.parent_session_id` (`010_*.sql`) is deliberately absent. This map
+ * only models "the referenced row must exist" and `CASCADES` only models
+ * delete-cascade, so neither can express that column's `ON DELETE SET NULL` —
+ * enforcing half of it would drift further from Postgres than leaving it out.
+ */
 const FOREIGN_KEYS: Partial<Record<TableName, Array<{ column: string; table: TableName }>>> = {
   session_snacks: [
     { column: "session_id", table: "sessions" },

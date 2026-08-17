@@ -41,6 +41,10 @@ export interface Session {
   time_out?: string | null
   used_hours?: number
   used_minutes?: number
+  /** Closed by the nightly sweep rather than by a person — `009_*.sql`. */
+  auto_checked_out?: boolean
+  /** Set on the child row a partial checkout split off — `010_*.sql`. */
+  parent_session_id?: string | null
   base_fee: number
   hourly_rate: number
   total_cost: number | null

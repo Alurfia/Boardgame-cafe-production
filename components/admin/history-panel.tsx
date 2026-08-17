@@ -5,6 +5,7 @@ import { createClient } from "@/lib/supabase/client"
 import { calculateBillableHours, calculateSessionTotal, roundCurrency } from "@/lib/billing"
 import { toast } from "sonner"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -276,6 +277,9 @@ export function HistoryPanel({ sessions, snacks, pricing, onUpdate }: HistoryPan
           used_hours: Math.floor(editElapsedMs / (60 * 60 * 1000)),
           used_minutes: Math.floor((editElapsedMs % (60 * 60 * 1000)) / (60 * 1000)),
           total_cost: editTotal,
+          // The flag marks a bill no person has confirmed. Saving here is that
+          // confirmation, so the row stops asking for a second look.
+          auto_checked_out: false,
         })
         .eq("id", editSession.id)
 
@@ -436,7 +440,27 @@ export function HistoryPanel({ sessions, snacks, pricing, onUpdate }: HistoryPan
                       return (
                         <TableRow key={session.id}>
                           <TableCell className="font-medium text-foreground">
-                            {session.customer_name}
+                            <span className="flex items-center gap-1.5">
+                              {session.customer_name}
+                              {session.auto_checked_out && (
+                                <Badge
+                                  variant="outline"
+                                  className="border-destructive/40 bg-destructive/10 px-1.5 py-0 text-[10px] font-medium text-destructive"
+                                  title="ระบบเช็คเอาท์ให้อัตโนมัติ — ยอดนี้ยังไม่มีคนยืนยัน"
+                                >
+                                  Auto
+                                </Badge>
+                              )}
+                              {session.parent_session_id && (
+                                <Badge
+                                  variant="outline"
+                                  className="border-primary/40 bg-primary/10 px-1.5 py-0 text-[10px] font-medium text-primary"
+                                  title="แยกออกมาจาก session อื่น — เก็บเงินเฉพาะคนที่ออกก่อน"
+                                >
+                                  Partial
+                                </Badge>
+                              )}
+                            </span>
                           </TableCell>
                           <TableCell className="whitespace-nowrap font-mono text-xs">
                             {formatClock(timeIn)}

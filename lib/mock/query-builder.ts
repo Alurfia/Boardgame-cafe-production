@@ -1,14 +1,21 @@
-import type {
-  Filter,
-  QueryAction,
-  QueryRequest,
-  QueryResult,
-  Row,
-  TableName,
+import {
+  mockError,
+  type Filter,
+  type QueryAction,
+  type QueryRequest,
+  type QueryResult,
+  type Row,
+  type RpcName,
+  type RpcRequest,
+  type SingleMode,
+  type TableName,
 } from "./types"
 
 /** Runs a serialized query — over HTTP in the browser, in-process on the server. */
 export type Executor = (request: QueryRequest) => Promise<QueryResult>
+
+/** Runs a database function. Same split: HTTP in the browser, in-process on the server. */
+export type RpcExecutor = (request: RpcRequest) => Promise<QueryResult>
 
 /**
  * A thenable that collects the same chained calls as `@supabase/supabase-js`
@@ -82,6 +89,55 @@ class MockQueryBuilder implements PromiseLike<QueryResult> {
   }
 }
 
+/**
+ * `supabase.rpc(fn, args)`. A `RETURNS TABLE` function resolves to an array, so
+ * `single()`/`maybeSingle()` narrow it the same way they do for a select.
+ */
+class MockRpcBuilder implements PromiseLike<QueryResult> {
+  private mode: SingleMode | null = null
+
+  constructor(
+    private readonly execute: RpcExecutor,
+    private readonly request: RpcRequest,
+  ) {}
+
+  single(): this {
+    this.mode = "single"
+    return this
+  }
+
+  maybeSingle(): this {
+    this.mode = "maybeSingle"
+    return this
+  }
+
+  then<TResult1 = QueryResult, TResult2 = never>(
+    onfulfilled?: ((value: QueryResult) => TResult1 | PromiseLike<TResult1>) | null,
+    onrejected?: ((reason: unknown) => TResult2 | PromiseLike<TResult2>) | null,
+  ): PromiseLike<TResult1 | TResult2> {
+    return this.execute(this.request)
+      .then((result) => this.narrow(result))
+      .then(onfulfilled, onrejected)
+  }
+
+  private narrow(result: QueryResult): QueryResult {
+    if (!this.mode || result.error) return result
+
+    const rows = Array.isArray(result.data) ? (result.data as Row[]) : []
+    if (rows.length === 1) return { data: rows[0], error: null }
+    if (rows.length === 0 && this.mode === "maybeSingle") return { data: null, error: null }
+
+    return {
+      data: null,
+      error: mockError(
+        "PGRST116",
+        "JSON object requested, multiple (or no) rows returned",
+        `Results contain ${rows.length} rows`,
+      ),
+    }
+  }
+}
+
 class MockTable {
   constructor(
     private readonly execute: Executor,
@@ -122,10 +178,17 @@ export interface MockRealtimeChannel {
 }
 
 /** Assembles the `supabase`-shaped façade the components already call. */
-export function createMockClient(execute: Executor, realtime: RealtimeAdapter) {
+export function createMockClient(
+  execute: Executor,
+  realtime: RealtimeAdapter,
+  executeRpc: RpcExecutor,
+) {
   return {
     from(table: string) {
       return new MockTable(execute, table as TableName)
+    },
+    rpc(fn: string, args: Record<string, unknown> = {}) {
+      return new MockRpcBuilder(executeRpc, { fn: fn as RpcName, args })
     },
     channel(topic: string) {
       return realtime.channel(topic)

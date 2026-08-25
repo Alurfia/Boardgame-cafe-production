@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto"
 
 import { calculateBillableHours, calculateSessionTotal } from "../billing"
+import { hashPassword } from "./password"
 import type { Row, TableName } from "./types"
 
 const MINUTE = 60 * 1000
@@ -11,6 +12,16 @@ const DAY = 24 * HOUR
 const BASE_FEE = 30
 const HOURLY_RATE = 30
 const MAX_BILLABLE_HOURS = 5
+
+/**
+ * Mirrors the starter accounts in `scripts/007_create_app_users.sql`. These are
+ * throwaway development credentials for a gitignored local database — the real
+ * ones live in Supabase and are changed there.
+ */
+const SEED_USERS: Array<[username: string, password: string, role: string]> = [
+  ["admin", "admin1234", "admin"],
+  ["staff", "staff1234", "staff"],
+]
 
 const SEED_SNACKS: Array<[string, number]> = [
   ["Coffee", 55],
@@ -28,6 +39,12 @@ interface SeedSessionSpec {
   startedMinutesAgo: number
   /** Minutes before "now" the session ended; omit to leave it active. */
   endedMinutesAgo?: number
+  /** Closed by the nightly sweep rather than by a person. */
+  autoCheckedOut?: boolean
+  /** Paused spans that already ended, in minutes — `012_*.sql`. */
+  pausedMinutes?: number
+  /** Minutes before "now" the clock was stopped and left stopped. */
+  pausedSinceMinutesAgo?: number
   /** Snack name -> quantity. */
   snacks?: Record<string, number>
 }
@@ -35,9 +52,16 @@ interface SeedSessionSpec {
 const SEED_SESSIONS: SeedSessionSpec[] = [
   // Active long enough that one 30-minute block is already billable.
   { name: "Nina", members: 3, startedMinutesAgo: 105, snacks: { Coffee: 2, Cookie: 1 } },
+  // Paused right now, so the admin timer and the kiosk both have a stopped
+  // clock to render from a fresh seed.
+  { name: "Aum", members: 2, startedMinutesAgo: 200, pausedSinceMinutesAgo: 40, snacks: { Tea: 1 } },
   // Today.
   { name: "Bank", members: 2, startedMinutesAgo: 300, endedMinutesAgo: 120, snacks: { Soda: 2, Chips: 1 } },
-  { name: "Ploy", members: 4, startedMinutesAgo: 480, endedMinutesAgo: 360, snacks: { Tea: 4 } },
+  // Checked out after the clock was stopped for a while: 4h at the table but
+  // only 3h30m billed, which is what `total_cost` below is computed from.
+  { name: "Fern", members: 3, startedMinutesAgo: 420, endedMinutesAgo: 180, pausedMinutes: 30, snacks: { Cookie: 3 } },
+  // Walked out without checking out, so the nightly sweep closed it.
+  { name: "Ploy", members: 4, startedMinutesAgo: 480, endedMinutesAgo: 360, autoCheckedOut: true, snacks: { Tea: 4 } },
   // Earlier days, so the summary charts have something to draw.
   { name: "Somchai", members: 2, startedMinutesAgo: 1440 + 240, endedMinutesAgo: 1440 + 60, snacks: { Sandwich: 2 } },
   { name: "Mook", members: 5, startedMinutesAgo: 5 * 1440 + 300, endedMinutesAgo: 5 * 1440, snacks: { Coffee: 3, Chips: 2 } },
@@ -61,6 +85,16 @@ export function createSeed(now: number = Date.now()): Record<TableName, Row[]> {
       updated_at: iso(now - 30 * DAY),
     },
   ]
+
+  const app_users: Row[] = SEED_USERS.map(([username, password, role]) => ({
+    id: randomUUID(),
+    username,
+    password_hash: hashPassword(password),
+    role,
+    is_active: true,
+    created_at: iso(now - 30 * DAY),
+    updated_at: iso(now - 30 * DAY),
+  }))
 
   const snacks: Row[] = SEED_SNACKS.map(([name, price]) => ({
     id: randomUUID(),
@@ -107,6 +141,14 @@ export function createSeed(now: number = Date.now()): Record<TableName, Row[]> {
       time_out: endedAt === null ? null : iso(endedAt),
       used_hours: 0,
       used_minutes: 0,
+      discount_hours: 0,
+      paused_at:
+        spec.pausedSinceMinutesAgo === undefined
+          ? null
+          : iso(now - spec.pausedSinceMinutesAgo * MINUTE),
+      paused_ms: (spec.pausedMinutes ?? 0) * MINUTE,
+      auto_checked_out: endedAt !== null && spec.autoCheckedOut === true,
+      parent_session_id: null,
       base_fee: BASE_FEE,
       hourly_rate: HOURLY_RATE,
       total_cost: null,
@@ -114,13 +156,15 @@ export function createSeed(now: number = Date.now()): Record<TableName, Row[]> {
     }
 
     if (endedAt !== null) {
-      const elapsedMs = Math.max(0, endedAt - startedAt)
+      const elapsedMs = Math.max(0, endedAt - startedAt - (spec.pausedMinutes ?? 0) * MINUTE)
       session.used_hours = Math.floor(elapsedMs / HOUR)
       session.used_minutes = Math.floor((elapsedMs % HOUR) / MINUTE)
       session.total_cost = calculateSessionTotal({
         baseFee: BASE_FEE,
         hourlyRate: HOURLY_RATE,
         billableHours: calculateBillableHours(elapsedMs, MAX_BILLABLE_HOURS),
+        elapsedMs,
+        maxBillableHours: MAX_BILLABLE_HOURS,
         memberCount: spec.members,
         snackTotal,
       })
@@ -129,5 +173,5 @@ export function createSeed(now: number = Date.now()): Record<TableName, Row[]> {
     sessions.push(session)
   }
 
-  return { pricing_config, snacks, sessions, session_snacks }
+  return { pricing_config, snacks, sessions, session_snacks, app_users }
 }

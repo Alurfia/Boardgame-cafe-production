@@ -1,5 +1,5 @@
 import { createMockClient, type MockRealtimeChannel } from "./query-builder"
-import { runQuery } from "./store"
+import { runQuery, runRpc } from "./store"
 
 /**
  * Server-side mock client. Talks to the JSON store directly — server components
@@ -31,5 +31,5 @@ const realtime = {
 }
 
 export function createMockServerClient() {
-  return createMockClient(runQuery, realtime)
+  return createMockClient(runQuery, realtime, runRpc)
 }

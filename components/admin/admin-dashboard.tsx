@@ -10,6 +10,7 @@ import { PricingPanel } from "./pricing-panel"
 import { SummaryPanel } from "./summary-panel"
 import { HistoryPanel } from "./history-panel"
 import { Clock, Cookie, DollarSign, BarChart3 } from "lucide-react"
+import type { UserRole } from "@/lib/auth/session"
 import type { PricingConfig, Snack, Session } from "@/lib/types"
 
 const supabase = createClient()
@@ -37,12 +38,15 @@ async function fetchPricing(): Promise<PricingConfig> {
 }
 
 interface AdminDashboardProps {
+  /** `staff` sees sessions and snacks; `admin` also gets pricing and summary. */
+  role: UserRole
   initialSessions: Session[]
   initialSnacks: Snack[]
   initialPricing: PricingConfig
 }
 
 export function AdminDashboard({
+  role,
   initialSessions,
   initialSnacks,
   initialPricing,
@@ -97,9 +101,15 @@ export function AdminDashboard({
   const activeSessions = sessions?.filter((s) => s.status === "active") ?? []
   const checkedOutSessions = sessions?.filter((s) => s.status === "checked_out") ?? []
 
+  const isAdmin = role === "admin"
+
   return (
     <Tabs defaultValue="sessions" className="flex flex-col gap-4 sm:gap-6">
-      <TabsList className="grid h-auto w-full grid-cols-4 gap-1 bg-secondary/50 p-1 sm:w-fit sm:flex sm:gap-0 sm:p-1">
+      <TabsList
+        className={`grid h-auto w-full gap-1 bg-secondary/50 p-1 sm:w-fit sm:flex sm:gap-0 sm:p-1 ${
+          isAdmin ? "grid-cols-4" : "grid-cols-2"
+        }`}
+      >
         <TabsTrigger 
           value="sessions" 
           className="flex items-center gap-1.5 rounded-lg px-3 py-2.5 text-xs transition-all data-[state=active]:bg-background data-[state=active]:shadow-sm sm:rounded-md sm:px-4 sm:py-2 sm:text-sm"
@@ -119,20 +129,24 @@ export function AdminDashboard({
           <Cookie className="h-3.5 w-3.5" />
           Snacks
         </TabsTrigger>
-        <TabsTrigger 
-          value="pricing" 
-          className="flex items-center gap-1.5 rounded-lg px-3 py-2.5 text-xs transition-all data-[state=active]:bg-background data-[state=active]:shadow-sm sm:rounded-md sm:px-4 sm:py-2 sm:text-sm"
-        >
-          <DollarSign className="h-3.5 w-3.5" />
-          Pricing
-        </TabsTrigger>
-        <TabsTrigger 
-          value="summary" 
-          className="flex items-center gap-1.5 rounded-lg px-3 py-2.5 text-xs transition-all data-[state=active]:bg-background data-[state=active]:shadow-sm sm:rounded-md sm:px-4 sm:py-2 sm:text-sm"
-        >
-          <BarChart3 className="h-3.5 w-3.5" />
-          Summary
-        </TabsTrigger>
+        {isAdmin && (
+          <>
+            <TabsTrigger
+              value="pricing"
+              className="flex items-center gap-1.5 rounded-lg px-3 py-2.5 text-xs transition-all data-[state=active]:bg-background data-[state=active]:shadow-sm sm:rounded-md sm:px-4 sm:py-2 sm:text-sm"
+            >
+              <DollarSign className="h-3.5 w-3.5" />
+              Pricing
+            </TabsTrigger>
+            <TabsTrigger
+              value="summary"
+              className="flex items-center gap-1.5 rounded-lg px-3 py-2.5 text-xs transition-all data-[state=active]:bg-background data-[state=active]:shadow-sm sm:rounded-md sm:px-4 sm:py-2 sm:text-sm"
+            >
+              <BarChart3 className="h-3.5 w-3.5" />
+              Summary
+            </TabsTrigger>
+          </>
+        )}
       </TabsList>
 
       <TabsContent value="sessions" className="animate-in">
@@ -148,25 +162,31 @@ export function AdminDashboard({
       <TabsContent value="snacks" className="animate-in">
         <SnacksPanel snacks={snacks ?? []} onUpdate={() => mutateSnacks()} />
       </TabsContent>
-      <TabsContent value="pricing" className="animate-in">
-        <PricingPanel pricing={pricing!} onUpdate={() => mutatePricing()} />
-      </TabsContent>
+      {/* Admin-only. Staff never get the markup, so there is nothing to reveal
+          by flipping the tab value in devtools. */}
+      {isAdmin && (
+        <>
+          <TabsContent value="pricing" className="animate-in">
+            <PricingPanel pricing={pricing!} onUpdate={() => mutatePricing()} />
+          </TabsContent>
 
-      <TabsContent value="summary" className="animate-in">
-        <div className="flex flex-col gap-4 sm:gap-6">
-          {/* The counter re-runs the summary aggregates after a history edit. */}
-          <SummaryPanel refreshKey={summaryRefresh} />
-          <HistoryPanel
-            sessions={checkedOutSessions}
-            snacks={snacks ?? []}
-            pricing={pricing!}
-            onUpdate={() => {
-              mutateSessions()
-              setSummaryRefresh((value) => value + 1)
-            }}
-          />
-        </div>
-      </TabsContent>
+          <TabsContent value="summary" className="animate-in">
+            <div className="flex flex-col gap-4 sm:gap-6">
+              {/* The counter re-runs the summary aggregates after a history edit. */}
+              <SummaryPanel refreshKey={summaryRefresh} />
+              <HistoryPanel
+                sessions={checkedOutSessions}
+                snacks={snacks ?? []}
+                pricing={pricing!}
+                onUpdate={() => {
+                  mutateSessions()
+                  setSummaryRefresh((value) => value + 1)
+                }}
+              />
+            </div>
+          </TabsContent>
+        </>
+      )}
     </Tabs>
   )
 }

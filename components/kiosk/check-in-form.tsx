@@ -5,6 +5,7 @@ import Image from "next/image"
 import { useState } from "react"
 import { createClient } from "@/lib/supabase/client"
 import { toast } from "sonner"
+import { useKioskError } from "./use-kiosk-error"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -23,6 +24,7 @@ export function CheckInForm({ pricing, onSessionCreated }: CheckInFormProps) {
   const [customerName, setCustomerName] = useState("")
   const [memberCount, setMemberCount] = useState("1")
   const [isSubmitting, setIsSubmitting] = useState(false)
+  const { showError, errorDialog } = useKioskError()
 
   const parsedMemberCount = parseInt(memberCount, 10)
   const memberCountInvalid = !Number.isFinite(parsedMemberCount) || parsedMemberCount < 1
@@ -30,17 +32,17 @@ export function CheckInForm({ pricing, onSessionCreated }: CheckInFormProps) {
   async function handleCheckIn(e: React.FormEvent) {
     e.preventDefault()
     if (!customerName.trim()) {
-      toast.error("Please enter your name")
+      showError("Please enter your name")
       return
     }
 
     if (memberCountInvalid) {
-      toast.error("Please enter at least 1 member")
+      showError("Please enter at least 1 member")
       return
     }
 
     if (!pricing) {
-      toast.error("Pricing is unavailable")
+      showError("Pricing is unavailable")
       return
     }
 
@@ -60,21 +62,19 @@ export function CheckInForm({ pricing, onSessionCreated }: CheckInFormProps) {
       )
 
       if (duplicateActiveName) {
-        toast.error("This name already has an active session", {
-          description: "Please select another name.",
-        })
+        showError("This name already has an active session", "Please select another name.")
         return
       }
 
-      const nowIso = new Date().toISOString()
+      // `started_at`/`time_in` are deliberately omitted: both default to the
+      // database's now(), so a customer device with a skewed clock cannot write
+      // a check-in time in the future. See scripts/008_*.sql.
       const { data, error } = await supabase
         .from("sessions")
         .insert({
           customer_name: customerName.trim(),
           member_count: parsedMemberCount,
           status: "active",
-          started_at: nowIso,
-          time_in: nowIso,
           base_fee: pricing.base_fee,
           hourly_rate: pricing.hourly_rate,
         })
@@ -86,12 +86,10 @@ export function CheckInForm({ pricing, onSessionCreated }: CheckInFormProps) {
       onSessionCreated(data as Session)
     } catch (error: any) {
       if (error?.code === "23505") {
-        toast.error("This name already has an active session", {
-          description: "Please select another name.",
-        })
+        showError("This name already has an active session", "Please select another name.")
         return
       }
-      toast.error("Failed to start session. Please try again.")
+      showError("Failed to start session. Please try again.")
     } finally {
       setIsSubmitting(false)
     }
@@ -238,6 +236,8 @@ export function CheckInForm({ pricing, onSessionCreated }: CheckInFormProps) {
           </form>
         </CardContent>
       </Card>
+
+      {errorDialog}
     </div>
   )
 }

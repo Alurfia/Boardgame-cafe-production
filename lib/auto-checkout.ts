@@ -8,6 +8,7 @@ import {
   calculateSessionTotal,
   resolveSessionStart,
 } from "./billing"
+import { CAFE_TIME_ZONE_DEFAULT, zonedDayKey } from "./business-day"
 import type { Session } from "./types"
 
 /**
@@ -33,7 +34,7 @@ const HOUR_MS = 60 * MINUTE_MS
  * The cafe's wall clock. "Yesterday" has to mean yesterday in Bangkok, not in
  * UTC where the cron actually runs.
  */
-export const CAFE_TIME_ZONE = process.env.CAFE_TIME_ZONE?.trim() || "Asia/Bangkok"
+export const CAFE_TIME_ZONE = process.env.CAFE_TIME_ZONE?.trim() || CAFE_TIME_ZONE_DEFAULT
 
 /** A session active this long is treated as forgotten. */
 export const DEFAULT_AUTO_CHECKOUT_AFTER_HOURS = 5
@@ -41,21 +42,6 @@ export const DEFAULT_AUTO_CHECKOUT_AFTER_HOURS = 5
 export function getAutoCheckoutAfterHours(): number {
   const value = Number(process.env.AUTO_CHECKOUT_AFTER_HOURS)
   return Number.isFinite(value) && value > 0 ? value : DEFAULT_AUTO_CHECKOUT_AFTER_HOURS
-}
-
-/** `YYYY-MM-DD` in the cafe's timezone — `en-CA` formats dates that way. */
-function zonedDayKey(date: Date, timeZone: string): string {
-  try {
-    return new Intl.DateTimeFormat("en-CA", {
-      timeZone,
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit",
-    }).format(date)
-  } catch {
-    // An unknown timezone name would otherwise take the whole sweep down.
-    return date.toISOString().slice(0, 10)
-  }
 }
 
 export type SkipReason =
@@ -81,6 +67,12 @@ export type AutoCheckoutDecision =
  * unique index and still keeps the day from settling whether its clock is
  * running or not. Pausing changes what the session is *charged*, never when it
  * is due to close.
+ *
+ * The boundary here is calendar midnight, not the 10:00 business-day cutoff in
+ * `lib/business-day.ts`. They answer different questions: this one is "has this
+ * table been sitting long enough that nobody is coming back for it", which the
+ * calendar answers, while the cutoff decides which day's takings a closed
+ * session lands in.
  */
 export function decideAutoCheckout(
   session: Pick<Session, "time_in" | "started_at">,

@@ -13,6 +13,14 @@ import {
   calculateSessionTotal,
   roundCurrency,
 } from "@/lib/billing"
+import {
+  currentBusinessDayKey,
+  formatDayKeyLabel,
+  getCafeTimeZone,
+  sessionBusinessDayKey,
+  shiftDayKey,
+  zonedDayKey,
+} from "@/lib/business-day"
 import { toast } from "sonner"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
@@ -42,10 +50,8 @@ import type { PricingConfig, Session, Snack } from "@/lib/types"
 
 const supabase = createClient()
 
-const DAY_MS = 24 * 60 * 60 * 1000
-
 interface HistoryPanelProps {
-  /** Every checked-out session; this panel filters by the selected day. */
+  /** Every checked-out session; this panel filters by the selected business day. */
   sessions: Session[]
   /** The snack menu, for adding items to a past session. */
   snacks: Snack[]
@@ -53,7 +59,11 @@ interface HistoryPanelProps {
   onUpdate: () => void
 }
 
-/** `YYYY-MM-DD` in local time, the format a `date` input expects. */
+/**
+ * `YYYY-MM-DD` in local time. Only the edit dialog's `datetime-local` inputs use
+ * this now — those really do speak the viewer's clock. The day the table is
+ * filtered by comes from `lib/business-day.ts` instead.
+ */
 function toDateValue(date: Date): string {
   const pad = (n: number) => String(n).padStart(2, "0")
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`
@@ -75,9 +85,21 @@ function getTimeOut(session: Session): Date | null {
   return raw ? new Date(raw) : null
 }
 
-function formatClock(date: Date | null): string {
+/**
+ * `01:30`, or `27/08 01:30` when the row sits on a different calendar date than
+ * the business day it is filed under. A day that rolls at 10:00 puts two dates
+ * in one table, and a bare clock cannot tell 23:30 from the following 01:30.
+ */
+function formatClock(date: Date | null, dayKey?: string): string {
   if (!date || Number.isNaN(date.getTime())) return "—"
-  return date.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })
+  const time = date.toLocaleTimeString("en-GB", {
+    hour: "2-digit",
+    minute: "2-digit",
+    timeZone: getCafeTimeZone(),
+  })
+  if (!dayKey) return time
+  const calendarKey = zonedDayKey(date)
+  return calendarKey === dayKey ? time : `${formatDayKeyLabel(calendarKey)} ${time}`
 }
 
 function formatDuration(ms: number): string {
@@ -87,7 +109,7 @@ function formatDuration(ms: number): string {
 }
 
 export function HistoryPanel({ sessions, snacks, pricing, onUpdate }: HistoryPanelProps) {
-  const [selectedDate, setSelectedDate] = useState(() => toDateValue(new Date()))
+  const [selectedDate, setSelectedDate] = useState(() => currentBusinessDayKey())
   const [snackTotals, setSnackTotals] = useState<Record<string, number>>({})
 
   const [editSession, setEditSession] = useState<Session | null>(null)
@@ -104,21 +126,16 @@ export function HistoryPanel({ sessions, snacks, pricing, onUpdate }: HistoryPan
   const [sessionToDelete, setSessionToDelete] = useState<Session | null>(null)
   const [isDeleting, setIsDeleting] = useState(false)
 
-  const todayValue = toDateValue(new Date())
+  const todayValue = currentBusinessDayKey()
 
-  // Sessions are grouped by the day they checked out, so this table always
-  // agrees with the revenue figures in the summary tab.
+  // Sessions are grouped by the business day they *checked in* on — the table
+  // that sat from 23:00 to 01:30 belongs to that night, not to the morning it
+  // happened to end in. `lib/business-day.ts` holds the 10:00 cutoff, and the
+  // summary tab counts the same way so the two agree.
   const rows = useMemo(() => {
     return sessions
-      .filter((session) => {
-        const out = getTimeOut(session)
-        return out !== null && !Number.isNaN(out.getTime()) && toDateValue(out) === selectedDate
-      })
-      .sort((a, b) => {
-        const left = getTimeOut(a)?.getTime() ?? 0
-        const right = getTimeOut(b)?.getTime() ?? 0
-        return right - left
-      })
+      .filter((session) => sessionBusinessDayKey(session) === selectedDate)
+      .sort((a, b) => getTimeIn(b).getTime() - getTimeIn(a).getTime())
   }, [sessions, selectedDate])
 
   const dayRevenue = rows.reduce((sum, session) => sum + Number(session.total_cost ?? 0), 0)
@@ -145,9 +162,7 @@ export function HistoryPanel({ sessions, snacks, pricing, onUpdate }: HistoryPan
   }, [loadSnackTotals, sessionIdsKey])
 
   function shiftDay(days: number) {
-    const current = new Date(`${selectedDate}T00:00:00`)
-    if (Number.isNaN(current.getTime())) return
-    setSelectedDate(toDateValue(new Date(current.getTime() + days * DAY_MS)))
+    setSelectedDate(shiftDayKey(selectedDate, days))
   }
 
   /** Reads a single session's snack total straight from the database. */
@@ -399,7 +414,7 @@ export function HistoryPanel({ sessions, snacks, pricing, onUpdate }: HistoryPan
                 ประวัติการใช้งาน
               </CardTitle>
               <CardDescription className="text-xs sm:text-sm">
-                เลือกวันที่เพื่อดูย้อนหลัง — จัดกลุ่มตามวันที่เช็คเอาท์
+                เลือกวันที่เพื่อดูย้อนหลัง — จัดกลุ่มตามวันที่เช็คอิน (รอบวันเริ่ม 10:00)
               </CardDescription>
             </div>
 
@@ -553,10 +568,10 @@ export function HistoryPanel({ sessions, snacks, pricing, onUpdate }: HistoryPan
                             </span>
                           </TableCell>
                           <TableCell className="whitespace-nowrap font-mono text-xs">
-                            {formatClock(timeIn)}
+                            {formatClock(timeIn, selectedDate)}
                           </TableCell>
                           <TableCell className="whitespace-nowrap font-mono text-xs">
-                            {formatClock(timeOut)}
+                            {formatClock(timeOut, selectedDate)}
                           </TableCell>
                           <TableCell className="whitespace-nowrap">
                             {formatDuration(durationMs)}

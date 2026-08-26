@@ -2,6 +2,13 @@
 
 import { useState, useEffect } from "react"
 import { createClient } from "@/lib/supabase/client"
+import {
+  currentBusinessDayKey,
+  formatDayKeyLabel,
+  formatMonthKeyLabel,
+  sessionBusinessDayKey,
+  shiftDayKey,
+} from "@/lib/business-day"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -89,81 +96,79 @@ export function SummaryPanel({ refreshKey = 0 }: SummaryPanelProps) {
       const allSessions = (sessions ?? []) as Session[]
       const allSnacks = (sessionSnacks ?? []) as any[]
 
-      const now = new Date()
-      const todayStart = new Date()
-      todayStart.setHours(0, 0, 0, 0)
-      const monthStart = new Date(now.getFullYear(), now.getMonth(), 1)
-      const yearStart = new Date(now.getFullYear(), 0, 1)
+      // Every figure below is bucketed by the *business day the session checked
+      // in on* — `lib/business-day.ts`, the 10:00 cutoff. The history tab counts
+      // the same way, so its per-day revenue matches the "today" tile here.
+      const todayKey = currentBusinessDayKey()
+      const monthKey = todayKey.slice(0, 7)
+      const yearKey = todayKey.slice(0, 4)
+
+      // A session whose check-in will not parse has no day to land on; counting
+      // it would only smear it across whichever bucket `Invalid Date` produced.
+      const dayKeys = new Map<string, string>()
+      for (const session of allSessions) {
+        const key = sessionBusinessDayKey(session)
+        if (key) dayKeys.set(session.id, key)
+      }
+      const dated = allSessions.filter((s) => dayKeys.has(s.id))
+
+      const sumRevenue = (rows: Session[]) =>
+        rows.reduce((sum, s) => sum + (Number(s.total_cost) || 0), 0)
+      const sumMembers = (rows: Session[]) =>
+        rows.reduce((sum, s) => sum + (s.member_count || 1), 0)
 
       // Calculate today's stats
-      const todaySessions = allSessions.filter((s) => {
-        const endDate = new Date(s.ended_at || "")
-        return endDate >= todayStart
-      })
-      const todayRevenue = todaySessions.reduce((sum, s) => sum + (Number(s.total_cost) || 0), 0)
-      const todayMembers = todaySessions.reduce((sum, s) => sum + (s.member_count || 1), 0)
+      const todaySessions = dated.filter((s) => dayKeys.get(s.id) === todayKey)
+      const todayRevenue = sumRevenue(todaySessions)
+      const todayMembers = sumMembers(todaySessions)
 
       // Calculate month's stats
-      const monthSessions = allSessions.filter((s) => {
-        const endDate = new Date(s.ended_at || "")
-        return endDate >= monthStart
-      })
-      const monthRevenue = monthSessions.reduce((sum, s) => sum + (Number(s.total_cost) || 0), 0)
-      const monthMembers = monthSessions.reduce((sum, s) => sum + (s.member_count || 1), 0)
+      const monthSessions = dated.filter((s) => dayKeys.get(s.id)!.slice(0, 7) === monthKey)
+      const monthRevenue = sumRevenue(monthSessions)
+      const monthMembers = sumMembers(monthSessions)
 
       // Calculate year's stats
-      const yearSessions = allSessions.filter((s) => {
-        const endDate = new Date(s.ended_at || "")
-        return endDate >= yearStart
-      })
-      const yearRevenue = yearSessions.reduce((sum, s) => sum + (Number(s.total_cost) || 0), 0)
-      const yearMembers = yearSessions.reduce((sum, s) => sum + (s.member_count || 1), 0)
+      const yearSessions = dated.filter((s) => dayKeys.get(s.id)!.slice(0, 4) === yearKey)
+      const yearRevenue = sumRevenue(yearSessions)
+      const yearMembers = sumMembers(yearSessions)
 
-      // Calculate daily data for the last 30 days
+      // Calculate daily data for the last 30 business days
       const dailyMap: Record<string, { label: string; revenue: number; sessions: number }> = {}
       for (let i = 29; i >= 0; i--) {
-        const date = new Date()
-        date.setDate(date.getDate() - i)
-        date.setHours(0, 0, 0, 0)
-        const dateKey = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`
-        const label = date.toLocaleDateString("en-GB", { day: "2-digit", month: "2-digit" })
-        dailyMap[dateKey] = { label, revenue: 0, sessions: 0 }
+        const key = shiftDayKey(todayKey, -i)
+        dailyMap[key] = { label: formatDayKeyLabel(key), revenue: 0, sessions: 0 }
       }
 
       // Calculate monthly data for the last 12 months
       const monthlyMap: Record<string, { label: string; revenue: number; sessions: number }> = {}
+      const monthCursor = new Date(`${monthKey}-01T00:00:00Z`)
       for (let i = 11; i >= 0; i--) {
-        const date = new Date(now.getFullYear(), now.getMonth() - i, 1)
-        const monthKey = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`
-        const label = date.toLocaleDateString("en-GB", { month: "short", year: "2-digit" })
-        monthlyMap[monthKey] = { label, revenue: 0, sessions: 0 }
+        const date = new Date(
+          Date.UTC(monthCursor.getUTCFullYear(), monthCursor.getUTCMonth() - i, 1),
+        )
+        const key = date.toISOString().slice(0, 7)
+        monthlyMap[key] = { label: formatMonthKeyLabel(key), revenue: 0, sessions: 0 }
       }
 
       // Calculate yearly data for the last 5 years
       const yearlyMap: Record<string, { label: string; revenue: number; sessions: number }> = {}
       for (let i = 4; i >= 0; i--) {
-        const year = now.getFullYear() - i
-        yearlyMap[String(year)] = { label: String(year), revenue: 0, sessions: 0 }
+        const year = String(Number(yearKey) - i)
+        yearlyMap[year] = { label: year, revenue: 0, sessions: 0 }
       }
 
-      allSessions.forEach((session) => {
-        const endDate = new Date(session.ended_at || "")
-        endDate.setHours(0, 0, 0, 0)
-        const dateKey = `${endDate.getFullYear()}-${String(endDate.getMonth() + 1).padStart(2, "0")}-${String(endDate.getDate()).padStart(2, "0")}`
-        const monthKey = `${endDate.getFullYear()}-${String(endDate.getMonth() + 1).padStart(2, "0")}`
-        const yearKey = String(endDate.getFullYear())
+      dated.forEach((session) => {
+        const dayKey = dayKeys.get(session.id)!
+        const revenue = Number(session.total_cost) || 0
 
-        if (dailyMap[dateKey]) {
-          dailyMap[dateKey].revenue += Number(session.total_cost) || 0
-          dailyMap[dateKey].sessions += 1
-        }
-        if (monthlyMap[monthKey]) {
-          monthlyMap[monthKey].revenue += Number(session.total_cost) || 0
-          monthlyMap[monthKey].sessions += 1
-        }
-        if (yearlyMap[yearKey]) {
-          yearlyMap[yearKey].revenue += Number(session.total_cost) || 0
-          yearlyMap[yearKey].sessions += 1
+        for (const bucket of [
+          dailyMap[dayKey],
+          monthlyMap[dayKey.slice(0, 7)],
+          yearlyMap[dayKey.slice(0, 4)],
+        ]) {
+          if (!bucket) continue
+          bucket.revenue += revenue
+          bucket.sessions += 1
         }
       })
 

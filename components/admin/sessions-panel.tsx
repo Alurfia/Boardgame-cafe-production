@@ -15,8 +15,15 @@ import {
   calculateSessionTotal,
   isSessionPaused,
   normalizeDiscountHours,
+  resolveSessionStart,
   roundCurrency,
 } from "@/lib/billing"
+import {
+  businessDayKey,
+  currentBusinessDayKey,
+  getCafeTimeZone,
+  sessionBusinessDayKey,
+} from "@/lib/business-day"
 import { toast } from "sonner"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -64,20 +71,22 @@ interface PartialSnackRow {
 }
 
 /**
- * Time only for sessions that started today, date + time otherwise — a session
- * carrying the wrong date is otherwise indistinguishable from a normal one.
+ * Time only for sessions that started in the current business day, date + time
+ * otherwise — a session carrying the wrong date is otherwise indistinguishable
+ * from a normal one.
+ *
+ * "Today" is the business day (`lib/business-day.ts`), not the calendar one: a
+ * table that checked in at 01:00 is still tonight's table at 02:00, and stamping
+ * a date on it would read as the very anomaly this label exists to flag.
  */
 function formatStartLabel(date: Date): string {
   if (Number.isNaN(date.getTime())) return "unknown"
 
-  const time = date.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })
-  const today = new Date()
-  const startedToday =
-    date.getFullYear() === today.getFullYear() &&
-    date.getMonth() === today.getMonth() &&
-    date.getDate() === today.getDate()
+  const timeZone = getCafeTimeZone()
+  const time = date.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", timeZone })
+  const startedToday = businessDayKey(date) === currentBusinessDayKey()
 
-  return startedToday ? time : `${date.toLocaleDateString("en-GB")} ${time}`
+  return startedToday ? time : `${date.toLocaleDateString("en-GB", { timeZone })} ${time}`
 }
 
 /** `2h 15m`, for the paused-time lines in the checkout dialogs. */
@@ -364,11 +373,6 @@ export function SessionsPanel({
     snackTotal: finishedStandardSnackTotal + finishedCustomSnackTotal,
   })
 
-  function getSessionTimeInDate(session: Session) {
-    const timeIn = session.time_in || session.started_at
-    return new Date(timeIn)
-  }
-
   // Keep the checkout estimate current while the dialog is open. The total is
   // derived from this, so pushing the clock forward is all there is to do — and
   // a paused session simply stops moving, because `calculateElapsedMs` takes
@@ -399,15 +403,14 @@ export function SessionsPanel({
     return () => clearInterval(interval)
   }, [partialSession, getBillableHours])
 
-  // Filter to only show today's completed sessions
-  const today = new Date()
-  today.setHours(0, 0, 0, 0)
-  const todayCheckedOutSessions = checkedOutSessions.filter((session) => {
-    if (!session.ended_at) return false
-    const endedDate = new Date(session.ended_at)
-    endedDate.setHours(0, 0, 0, 0)
-    return endedDate.getTime() === today.getTime()
-  })
+  // Only this business day's completed sessions — the day rolls at 10:00
+  // (`lib/business-day.ts`) and a session counts on the day it checked in, so
+  // the table closed at 01:30 stays on the list it opened on instead of
+  // vanishing at midnight while staff are still working.
+  const todayKey = currentBusinessDayKey()
+  const todayCheckedOutSessions = checkedOutSessions.filter(
+    (session) => sessionBusinessDayKey(session) === todayKey,
+  )
 
   async function handleCheckout(session: Session) {
     const now = Date.now()
@@ -581,7 +584,7 @@ export function SessionsPanel({
     const takenItems = partialTakenItems
     const endedAt = Date.now()
     const endedAtIso = new Date(endedAt).toISOString()
-    const startedAtIso = getSessionTimeInDate(parent).toISOString()
+    const startedAtIso = resolveSessionStart(parent).toISOString()
     const elapsedMs = calculateElapsedMs(parent, endedAt)
     const billableHours = getBillableHours(elapsedMs)
     // A snapshot of the parent's paused time at the split. The parent is left
@@ -802,7 +805,7 @@ export function SessionsPanel({
   }
 
   function openEditTimeDialog(session: Session) {
-    setEditTimeValue(toLocalDateTimeValue(getSessionTimeInDate(session)))
+    setEditTimeValue(toLocalDateTimeValue(resolveSessionStart(session)))
     setEditTimeSession(session)
   }
 
@@ -1254,7 +1257,7 @@ export function SessionsPanel({
                       </p>
                       <div className="flex items-center gap-1">
                         <p className="text-xs text-muted-foreground" suppressHydrationWarning>
-                          Started {formatStartLabel(getSessionTimeInDate(session))}
+                          Started {formatStartLabel(resolveSessionStart(session))}
                         </p>
                         <Button
                           variant="ghost"

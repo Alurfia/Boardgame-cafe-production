@@ -49,7 +49,7 @@ Supabase Postgres. Migrations live in [scripts/](scripts/) as numbered `.sql` fi
 
 Tables: `pricing_config` (single row), `snacks`, `sessions`, `session_snacks` (junction), `app_users` (staff accounts). Every table *except `app_users`* has an `USING (true) WITH CHECK (true)` policy — the anon key has full read/write. This is deliberate: the kiosk is unauthenticated. Anything sensitive does not belong in those tables.
 
-`sessions` accreted columns across migrations, so treat `time_in`/`time_out` as authoritative where present and fall back to `started_at`/`ended_at` (`getSessionTimeInDate` in [sessions-panel.tsx](components/admin/sessions-panel.tsx) does this). `used_hours`/`used_minutes` are written only at checkout. `discount_hours` (`011_*.sql`) holds the redeemed discount privileges — see [Billing rule](#billing-rule-the-important-part). `auto_checked_out` (`009_*.sql`) marks the rows the nightly sweep closed — see [Auto checkout](#auto-checkout). `paused_at`/`paused_ms` (`012_*.sql`) stop the clock — see [Pausing the clock](#pausing-the-clock).
+`sessions` accreted columns across migrations, so treat `time_in`/`time_out` as authoritative where present and fall back to `started_at`/`ended_at` (`resolveSessionStart` in [lib/billing.ts](lib/billing.ts) is the one implementation of that rule — call it rather than writing `time_in || started_at` again). `used_hours`/`used_minutes` are written only at checkout. `discount_hours` (`011_*.sql`) holds the redeemed discount privileges — see [Billing rule](#billing-rule-the-important-part). `auto_checked_out` (`009_*.sql`) marks the rows the nightly sweep closed — see [Auto checkout](#auto-checkout). `paused_at`/`paused_ms` (`012_*.sql`) stop the clock — see [Pausing the clock](#pausing-the-clock).
 
 `006_unique_active_session_name.sql` adds a *partial* unique index on `lower(btrim(customer_name)) WHERE status = 'active'` — a name may repeat across history, but not among active sessions. Both insert paths ([check-in-form.tsx](components/kiosk/check-in-form.tsx), `createAdminSession` in [sessions-panel.tsx](components/admin/sessions-panel.tsx)) pre-check for duplicates *and* catch Postgres error code `23505`; keep both when adding a third path.
 
@@ -124,6 +124,20 @@ Staff toggle it from the Pause/Resume button on an active row in [sessions-panel
 
 The kiosk shows the stopped state (frozen timer, "Paused" badge) rather than a clock that mysteriously stops. The history edit dialog carries a "เวลาที่หยุด (นาที)" field, because a mistaken pause is otherwise uncorrectable — adjusting `time_in`/`time_out` to compensate would falsify them.
 
+### The business day
+
+The cafe's day does not end at midnight. The last table of the night checks in at 23:30 and the one after it at 01:00, and both belong to the same night's takings, so the day rolls over at **10:00 in `CAFE_TIME_ZONE`** — the same moment the auto-checkout sweep runs, which is why whatever is left over gets closed exactly as the day turns.
+
+A session is counted into the business day it **checked in** on, never the one it checked out on: the table that sat 23:00–01:30 is one of last night's tables, not the first of today's.
+
+[lib/business-day.ts](lib/business-day.ts) is the single source of truth, the way [lib/billing.ts](lib/billing.ts) is for money. `businessDayKey(date)` is the whole rule — shift back by `CAFE_DAY_CUTOFF_HOUR` and take the calendar day — and `sessionBusinessDayKey(session)` applies it to a row's check-in. Everything downstream compares those `YYYY-MM-DD` strings: same day is `===`, a month is `key.slice(0, 7)`, a year is `key.slice(0, 4)`, and `shiftDayKey` walks the axis. **Never compare timestamps with `setHours(0, 0, 0, 0)` in a component** — that reads the *viewer's* midnight, so an admin outside Bangkok saw a different day, which is exactly what this replaced in [history-panel.tsx](components/admin/history-panel.tsx), [summary-panel.tsx](components/admin/summary-panel.tsx) and [sessions-panel.tsx](components/admin/sessions-panel.tsx).
+
+Because history and the summary tiles now bucket the same rows off the same field, **the history table's per-day revenue equals the summary tab's "today"** — they used to read `time_out` and `ended_at` respectively and could disagree.
+
+The timezone is read from `NEXT_PUBLIC_CAFE_TIME_ZONE` first and `CAFE_TIME_ZONE` second, because the latter is server-only and `lib/business-day.ts` is imported by client components. Move the cafe and you set both, plus the cron in [vercel.json](vercel.json).
+
+The filtering all happens in memory over rows already fetched — there is no date predicate in any query, which also keeps `json` mode working, since the mock query builder has no `gte`/`lte`.
+
 ### Auto checkout
 
 Customers forget to check out, and there is no logout on the kiosk — the session then stays `active` forever, holding its name against the unique index and keeping the day from settling. [lib/auto-checkout.ts](lib/auto-checkout.ts) sweeps those; [vercel.json](vercel.json) schedules `GET /api/cron/auto-checkout` at `0 3 * * *`, which is **10:00 Asia/Bangkok** because Vercel cron expressions are always UTC. Move the cafe and you move both.
@@ -131,6 +145,8 @@ Customers forget to check out, and there is no logout on the kiosk — the sessi
 `decideAutoCheckout` closes a session once it has run `AUTO_CHECKOUT_AFTER_HOURS` (default 5) *or* crossed midnight in `CAFE_TIME_ZONE`, whichever lands first. A future or unparseable `time_in` is **skipped and reported**, never billed — the timer views already flag that for a human.
 
 `time_out` is the moment the sweep runs, so the bill covers real elapsed time, capped as always by `max_billable_hours`. **The sweep decides when to stop the clock, never how much to charge** — it calls the same `lib/billing.ts` functions a manual checkout does. Do not grow a second billing path here.
+
+The sweep's own boundary is calendar **midnight**, not the 10:00 business-day cutoff above — they answer different questions. "Has this table been abandoned" is a wall-clock question; the cutoff only decides which day's takings a closed session lands in.
 
 A **paused** session is swept like any other, and deliberately so: `decideAutoCheckout` measures the wall clock, because an unclosed table holds its name against the unique index and keeps the day from settling whether its clock runs or not. Pausing changes what a session is *charged*, never when it is *due to close*. The sweep closes the open pause span the way a manual checkout does.
 

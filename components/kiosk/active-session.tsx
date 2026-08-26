@@ -5,8 +5,10 @@ import { createClient } from "@/lib/supabase/client"
 import {
   ESTIMATE_REFRESH_MS,
   calculateBillableHours,
+  calculateElapsedMs,
   calculateFeePerPerson,
   calculateSessionTotal,
+  isSessionPaused,
   resolveSessionStart,
 } from "@/lib/billing"
 import { toast } from "sonner"
@@ -15,7 +17,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Separator } from "@/components/ui/separator"
-import { Clock, DollarSign, ShoppingBag, Plus, Minus, Sparkles, Users } from "lucide-react"
+import { Clock, DollarSign, ShoppingBag, Pause, Plus, Minus, Sparkles, Users } from "lucide-react"
 import type { Session, Snack, PricingConfig, SessionSnack } from "@/lib/types"
 
 const supabase = createClient()
@@ -85,10 +87,17 @@ export function ActiveSession({ session, snacks, pricing, onUpdate }: ActiveSess
         return
       }
 
-      const diffMs = Date.now() - started
-      setStartNotReached(diffMs < 0)
-      if (diffMs < 0) return
+      // Measured against the raw clock: a paused session has counted zero and
+      // so has a future check-in, but only one of them is a mistake.
+      if (Date.now() - started < 0) {
+        setStartNotReached(true)
+        return
+      }
+      setStartNotReached(false)
 
+      // Counted time, so the display sits still while staff have the clock
+      // stopped — `calculateElapsedMs` takes the open pause span back off.
+      const diffMs = calculateElapsedMs(session)
       const hours = Math.floor(diffMs / (1000 * 60 * 60))
       const minutes = Math.floor((diffMs % (1000 * 60 * 60)) / (1000 * 60))
       const seconds = Math.floor((diffMs % (1000 * 60)) / 1000)
@@ -96,10 +105,9 @@ export function ActiveSession({ session, snacks, pricing, onUpdate }: ActiveSess
     }
 
     function updateCost() {
-      const started = resolveSessionStart(session).getTime()
       // The estimate still clamps — nobody is billed for a negative duration —
       // but `update` surfaces the bad timestamp instead of hiding it.
-      const diffMs = Number.isNaN(started) ? 0 : Math.max(0, Date.now() - started)
+      const diffMs = calculateElapsedMs(session)
 
       const billableHours = calculateBillableHours(diffMs, pricing.max_billable_hours)
       const snackTotal = sessionSnacks.reduce(
@@ -112,6 +120,8 @@ export function ActiveSession({ session, snacks, pricing, onUpdate }: ActiveSess
           baseFee: session.base_fee,
           hourlyRate: session.hourly_rate,
           billableHours,
+          elapsedMs: diffMs,
+          maxBillableHours: pricing.max_billable_hours,
           memberCount: session.member_count || 1,
           snackTotal,
         })
@@ -191,6 +201,8 @@ export function ActiveSession({ session, snacks, pricing, onUpdate }: ActiveSess
     0
   )
 
+  const paused = isSessionPaused(session)
+
   return (
     <div className="flex flex-col gap-4 sm:gap-6 slide-up">
       {/* Session Header */}
@@ -207,10 +219,17 @@ export function ActiveSession({ session, snacks, pricing, onUpdate }: ActiveSess
             {session.customer_name}
           </h2>
         </div>
-        <Badge className="gap-1.5 border-accent/30 bg-accent/10 px-3 py-1.5 text-accent">
-          <span className="h-2 w-2 animate-pulse rounded-full bg-accent" />
-          Session Active
-        </Badge>
+        {paused ? (
+          <Badge className="gap-1.5 border-border bg-muted px-3 py-1.5 text-muted-foreground">
+            <Pause className="h-3 w-3" />
+            Paused
+          </Badge>
+        ) : (
+          <Badge className="gap-1.5 border-accent/30 bg-accent/10 px-3 py-1.5 text-accent">
+            <span className="h-2 w-2 animate-pulse rounded-full bg-accent" />
+            Session Active
+          </Badge>
+        )}
         <div className="-mt-1 flex items-center gap-1 rounded-full border border-accent/30 bg-accent/10 px-3 py-1 text-xs text-foreground">
           <Users className="h-3.5 w-3.5 text-primary" />
           <span>{session.member_count || 1} member{(session.member_count || 1) > 1 ? "s" : ""}</span>
@@ -239,13 +258,20 @@ export function ActiveSession({ session, snacks, pricing, onUpdate }: ActiveSess
               </>
             ) : (
               <>
-                <p className="timer-display text-2xl font-bold tracking-tight text-foreground sm:text-4xl">
+                <p
+                  className={`timer-display text-2xl font-bold tracking-tight sm:text-4xl ${paused ? "text-muted-foreground" : "text-foreground"}`}
+                >
                   {String(elapsed.hours).padStart(2, "0")}:
                   {String(elapsed.minutes).padStart(2, "0")}
                 </p>
                 <p className="font-mono text-xs text-muted-foreground">
                   :{String(elapsed.seconds).padStart(2, "0")}
                 </p>
+                {paused && (
+                  <p className="text-center text-[10px] leading-tight text-muted-foreground sm:text-xs">
+                    หยุดเวลาชั่วคราว — ยอดไม่เพิ่มขึ้น
+                  </p>
+                )}
               </>
             )}
           </CardContent>

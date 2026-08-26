@@ -111,6 +111,8 @@ const NUMERIC_COLUMNS: Record<TableName, string[]> = {
     "total_cost",
     "used_hours",
     "used_minutes",
+    "discount_hours",
+    "paused_ms",
   ],
   session_snacks: ["quantity", "price_at_time"],
   app_users: [],
@@ -126,6 +128,9 @@ const TABLE_DEFAULTS: Record<TableName, Row> = {
     time_out: null,
     used_hours: 0,
     used_minutes: 0,
+    discount_hours: 0,
+    paused_at: null,
+    paused_ms: 0,
     auto_checked_out: false,
     parent_session_id: null,
     base_fee: 5,
@@ -228,6 +233,22 @@ function validateRow(
       return mockError(
         "23514",
         'new row for relation "sessions" violates check constraint "sessions_used_minutes_range_check"',
+      )
+    }
+
+    const discountHours = Number(row.discount_hours ?? 0)
+    if (!Number.isFinite(discountHours) || discountHours < 0) {
+      return mockError(
+        "23514",
+        'new row for relation "sessions" violates check constraint "sessions_discount_hours_non_negative_check"',
+      )
+    }
+
+    const pausedMs = Number(row.paused_ms ?? 0)
+    if (!Number.isFinite(pausedMs) || pausedMs < 0) {
+      return mockError(
+        "23514",
+        'new row for relation "sessions" violates check constraint "sessions_paused_ms_non_negative_check"',
       )
     }
 

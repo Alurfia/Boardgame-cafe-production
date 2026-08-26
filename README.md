@@ -170,12 +170,52 @@ refresh every 60s, which bounds display staleness only, never what is charged.
 
 Currency is Thai baht, written as a literal `฿` prefix with `.toFixed(2)`.
 
+## Auto checkout
+
+Customers forget to check out. The session then stays `active` forever: the
+kiosk timer keeps running, the name stays locked by the unique index, and the
+day's takings never settle. A cron closes those every morning at **10:00
+Asia/Bangkok**.
+
+- [vercel.json](vercel.json) schedules `GET /api/cron/auto-checkout` at
+  `0 3 * * *` — Vercel cron expressions are always **UTC**, and 03:00 UTC is
+  10:00 in Bangkok. Change the timezone and you change this expression too.
+- [lib/auto-checkout.ts](lib/auto-checkout.ts) does the work. A session is swept
+  once it has been active for **5 hours** (`AUTO_CHECKOUT_AFTER_HOURS`), or once
+  it has crossed midnight in `CAFE_TIME_ZONE` — whichever comes first.
+- `time_out` is the moment the sweep runs, so the bill covers the real elapsed
+  time. It is still capped by `pricing_config.max_billable_hours`, so a session
+  left running overnight cannot bill more than a normal long one — but
+  `used_hours` will read like the 14 hours it really was.
+- The billing arithmetic is [lib/billing.ts](lib/billing.ts), unchanged. The
+  sweep decides *when* to stop the clock, never *how much* to charge.
+- Swept rows get `auto_checked_out = true` and show an **Auto** badge in the
+  sessions and history tabs, because nobody confirmed that total. Saving the
+  session from the history edit dialog clears the flag.
+- Sessions whose check-in time is in the future or unparseable are **skipped**
+  and reported — a broken timestamp is a human's problem, and billing from it
+  would invent a number.
+
+Running it twice is harmless: the update only matches rows still `status =
+'active'`. The response body is a report of what it closed, skipped and failed,
+which is the only trace Vercel keeps beyond the status code.
+
+Set `CRON_SECRET` in the Vercel project. Vercel sends it as
+`Authorization: Bearer <secret>` on scheduled requests, and it is the only thing
+stopping anyone who guesses the URL from closing every session. Without it the
+route is open in development and closed in production. A signed-in admin browser
+can also `POST` to it to sweep early:
+
+```bash
+curl -X POST localhost:3000/api/cron/auto-checkout
+```
+
 ## Database
 
 Supabase Postgres. Migrations live in [scripts/](scripts/) as numbered `.sql`
 files applied **manually through the Supabase SQL editor** — there is no
 migration tool and no tracking table. A schema change is a new `NNN_*.sql` file
-(next: `008_`), written idempotently (`IF NOT EXISTS`) because they get
+(next: `010_`), written idempotently (`IF NOT EXISTS`) because they get
 re-pasted. Mirror any change in [lib/mock/store.ts](lib/mock/store.ts) and
 [lib/mock/seed.ts](lib/mock/seed.ts) or `json` mode drifts from `db` mode.
 
@@ -208,7 +248,8 @@ and passes them to a `"use client"` shell
 the matching `mutate()` on any event — no revalidation interval. Mutations are
 direct `supabase.from(...)` calls from client components; there are no server
 actions. The route handlers are the mock API under `app/api/mock/` (inactive in
-`db` mode) and the login/logout pair under `app/api/admin/`.
+`db` mode), the login/logout pair under `app/api/admin/`, and the daily sweep
+under `app/api/cron/` — see [Auto checkout](#auto-checkout).
 
 `/admin` is split into a `(dashboard)` route group carrying the header chrome
 and session check, so [app/admin/login/page.tsx](app/admin/login/page.tsx)

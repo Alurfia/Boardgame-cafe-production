@@ -5,8 +5,16 @@ import { createClient } from "@/lib/supabase/client"
 import {
   ESTIMATE_REFRESH_MS,
   calculateBillableHours,
+  calculateElapsedMs,
+  calculatePausedMs,
+  calculatePrivilegeHours,
+  calculateDiscountAmount,
+  calculateDiscountRate,
   calculateFeePerPerson,
+  calculateMaxDiscountHours,
   calculateSessionTotal,
+  isSessionPaused,
+  normalizeDiscountHours,
   roundCurrency,
 } from "@/lib/billing"
 import { toast } from "sonner"
@@ -21,10 +29,11 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
-import { Clock, DollarSign, LogOut, ShoppingBag, Users, Edit2, UserPlus, UserMinus, CheckCircle2, Plus, Minus, Trash2 } from "lucide-react"
+import { Clock, DollarSign, LogOut, ShoppingBag, Users, Edit2, UserPlus, UserMinus, CheckCircle2, Pause, Play, Plus, Minus, Trash2 } from "lucide-react"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { SessionSnacksList } from "./session-snacks-list"
+import { DiscountHoursField } from "./discount-hours-field"
 import { ActiveTimer } from "./active-timer"
 import type { Session, Snack, PricingConfig } from "@/lib/types"
 
@@ -71,6 +80,12 @@ function formatStartLabel(date: Date): string {
   return startedToday ? time : `${date.toLocaleDateString("en-GB")} ${time}`
 }
 
+/** `2h 15m`, for the paused-time lines in the checkout dialogs. */
+function formatPausedDuration(ms: number): string {
+  const total = Math.max(0, Math.floor(ms / (60 * 1000)))
+  return `${Math.floor(total / 60)}h ${total % 60}m`
+}
+
 /** Formats a date for a `datetime-local` input, which expects local time. */
 function toLocalDateTimeValue(date: Date): string {
   const safe = Number.isNaN(date.getTime()) ? new Date() : date
@@ -95,18 +110,25 @@ export function SessionsPanel({
   )
 
   const [checkoutSession, setCheckoutSession] = useState<Session | null>(null)
-  const [checkoutTotal, setCheckoutTotal] = useState<number>(0)
   const [checkoutMemberCount, setCheckoutMemberCount] = useState("1")
   const [checkoutBillableHours, setCheckoutBillableHours] = useState(0)
+  const [checkoutElapsedMs, setCheckoutElapsedMs] = useState(0)
+  const [checkoutDiscountHours, setCheckoutDiscountHours] = useState(0)
   const [checkoutSnackTotal, setCheckoutSnackTotal] = useState(0)
   const [checkoutSnackItems, setCheckoutSnackItems] = useState<{id: string; name: string; quantity: number; price_at_time: number}[]>([])
+  const [checkoutPausedMs, setCheckoutPausedMs] = useState(0)
   const [isCheckingOut, setIsCheckingOut] = useState(false)
   const [partialSession, setPartialSession] = useState<Session | null>(null)
   const [partialMemberCount, setPartialMemberCount] = useState("1")
   const [partialSnackRows, setPartialSnackRows] = useState<PartialSnackRow[]>([])
   const [partialTakeQty, setPartialTakeQty] = useState<Record<string, number>>({})
   const [partialBillableHours, setPartialBillableHours] = useState(0)
+  const [partialElapsedMs, setPartialElapsedMs] = useState(0)
+  const [partialDiscountHours, setPartialDiscountHours] = useState(0)
+  const [partialPausedMs, setPartialPausedMs] = useState(0)
   const [isPartialCheckingOut, setIsPartialCheckingOut] = useState(false)
+  /** The session whose pause toggle is in flight, so its button can't double-fire. */
+  const [pausingSessionId, setPausingSessionId] = useState<string | null>(null)
   const [snackViewSession, setSnackViewSession] = useState<Session | null>(null)
   const [editMembersSession, setEditMembersSession] = useState<Session | null>(null)
   const [editMembersCount, setEditMembersCount] = useState("1")
@@ -132,11 +154,59 @@ export function SessionsPanel({
   const [finishedSessionTimeOut, setFinishedSessionTimeOut] = useState(getNowLocalDateTimeValue())
   const [finishedSnackQtys, setFinishedSnackQtys] = useState<Record<string, string>>({})
   const [finishedCustomSnacks, setFinishedCustomSnacks] = useState<CustomFinishedSnackRow[]>([])
+  const [finishedDiscountHours, setFinishedDiscountHours] = useState(0)
   const [isCreatingFinishedSession, setIsCreatingFinishedSession] = useState(false)
 
   const parsedCheckoutMembers = parseInt(checkoutMemberCount, 10)
   const checkoutMembersInvalid = !Number.isFinite(parsedCheckoutMembers) || parsedCheckoutMembers < 1
   const checkoutMembersForCalc = checkoutMembersInvalid ? 1 : parsedCheckoutMembers
+
+  // Everything below the clock is derived — the elapsed time is the only thing
+  // that has to be pushed in from a timer, so the total cannot fall out of step
+  // with the member count, the snacks or the redeemed privileges.
+  const checkoutMaxDiscountHours = calculateMaxDiscountHours(
+    checkoutElapsedMs,
+    checkoutMembersForCalc,
+    pricing.max_billable_hours,
+  )
+  const checkoutDiscountForCalc = Math.min(checkoutDiscountHours, checkoutMaxDiscountHours)
+  const checkoutFeePerPerson = checkoutSession
+    ? calculateFeePerPerson({
+        baseFee: checkoutSession.base_fee,
+        hourlyRate: checkoutSession.hourly_rate,
+        billableHours: checkoutBillableHours,
+      })
+    : 0
+  const checkoutDiscountRate = checkoutSession
+    ? calculateDiscountRate({
+        baseFee: checkoutSession.base_fee,
+        hourlyRate: checkoutSession.hourly_rate,
+        billableHours: checkoutBillableHours,
+      })
+    : 0
+  const checkoutDiscountAmount = checkoutSession
+    ? calculateDiscountAmount({
+        baseFee: checkoutSession.base_fee,
+        hourlyRate: checkoutSession.hourly_rate,
+        billableHours: checkoutBillableHours,
+        elapsedMs: checkoutElapsedMs,
+        maxBillableHours: pricing.max_billable_hours,
+        memberCount: checkoutMembersForCalc,
+        discountHours: checkoutDiscountForCalc,
+      })
+    : 0
+  const checkoutTotal = checkoutSession
+    ? calculateSessionTotal({
+        baseFee: checkoutSession.base_fee,
+        hourlyRate: checkoutSession.hourly_rate,
+        billableHours: checkoutBillableHours,
+        elapsedMs: checkoutElapsedMs,
+        maxBillableHours: pricing.max_billable_hours,
+        memberCount: checkoutMembersForCalc,
+        discountHours: checkoutDiscountForCalc,
+        snackTotal: checkoutSnackTotal,
+      })
+    : 0
 
   // A partial checkout takes some of the table with it, so at least one member
   // has to stay behind — leaving with everybody is a plain checkout.
@@ -160,6 +230,32 @@ export function SessionsPanel({
         billableHours: partialBillableHours,
       })
     : 0
+  // Only the members walking out redeem privileges, so the cap follows the
+  // departing headcount rather than the whole table's.
+  const partialMaxDiscountHours = calculateMaxDiscountHours(
+    partialElapsedMs,
+    partialMembersForCalc,
+    pricing.max_billable_hours,
+  )
+  const partialDiscountForCalc = Math.min(partialDiscountHours, partialMaxDiscountHours)
+  const partialDiscountRate = partialSession
+    ? calculateDiscountRate({
+        baseFee: partialSession.base_fee,
+        hourlyRate: partialSession.hourly_rate,
+        billableHours: partialBillableHours,
+      })
+    : 0
+  const partialDiscountAmount = partialSession
+    ? calculateDiscountAmount({
+        baseFee: partialSession.base_fee,
+        hourlyRate: partialSession.hourly_rate,
+        billableHours: partialBillableHours,
+        elapsedMs: partialElapsedMs,
+        maxBillableHours: pricing.max_billable_hours,
+        memberCount: partialMembersForCalc,
+        discountHours: partialDiscountForCalc,
+      })
+    : 0
   const partialTotal = partialSession
     ? calculateSessionTotal({
         // The session's own snapshot, never current pricing — editing pricing
@@ -167,7 +263,10 @@ export function SessionsPanel({
         baseFee: partialSession.base_fee,
         hourlyRate: partialSession.hourly_rate,
         billableHours: partialBillableHours,
+        elapsedMs: partialElapsedMs,
+        maxBillableHours: pricing.max_billable_hours,
         memberCount: partialMembersForCalc,
+        discountHours: partialDiscountForCalc,
         snackTotal: partialSnackTotal,
       })
     : 0
@@ -234,11 +333,34 @@ export function SessionsPanel({
   const finishedSessionFeeTotal =
     Number(pricing.base_fee) * finishedMembersForCalc +
     Number(pricing.hourly_rate) * finishedBillableHours * finishedMembersForCalc
+  const finishedMaxDiscountHours = calculateMaxDiscountHours(
+    finishedUsageMs,
+    finishedMembersForCalc,
+    pricing.max_billable_hours,
+  )
+  const finishedDiscountForCalc = Math.min(finishedDiscountHours, finishedMaxDiscountHours)
+  const finishedDiscountRate = calculateDiscountRate({
+    baseFee: pricing.base_fee,
+    hourlyRate: pricing.hourly_rate,
+    billableHours: finishedBillableHours,
+  })
+  const finishedDiscountAmount = calculateDiscountAmount({
+    baseFee: pricing.base_fee,
+    hourlyRate: pricing.hourly_rate,
+    billableHours: finishedBillableHours,
+    elapsedMs: finishedUsageMs,
+    maxBillableHours: pricing.max_billable_hours,
+    memberCount: finishedMembersForCalc,
+    discountHours: finishedDiscountForCalc,
+  })
   const finishedCalculatedTotal = calculateSessionTotal({
     baseFee: pricing.base_fee,
     hourlyRate: pricing.hourly_rate,
     billableHours: finishedBillableHours,
+    elapsedMs: finishedUsageMs,
+    maxBillableHours: pricing.max_billable_hours,
     memberCount: finishedMembersForCalc,
+    discountHours: finishedDiscountForCalc,
     snackTotal: finishedStandardSnackTotal + finishedCustomSnackTotal,
   })
 
@@ -247,35 +369,32 @@ export function SessionsPanel({
     return new Date(timeIn)
   }
 
-  // Keep the checkout estimate current while the dialog is open
+  // Keep the checkout estimate current while the dialog is open. The total is
+  // derived from this, so pushing the clock forward is all there is to do — and
+  // a paused session simply stops moving, because `calculateElapsedMs` takes
+  // the open pause span off at the same rate the clock adds to it.
   useEffect(() => {
     if (!checkoutSession) return
     const interval = setInterval(() => {
-      const now = new Date()
-      const started = getSessionTimeInDate(checkoutSession)
-      const diffMs = Math.max(0, now.getTime() - started.getTime())
-      const billableHours = getBillableHours(diffMs)
-      setCheckoutBillableHours(billableHours)
-      setCheckoutTotal(
-        calculateSessionTotal({
-          baseFee: checkoutSession.base_fee,
-          hourlyRate: checkoutSession.hourly_rate,
-          billableHours,
-          memberCount: checkoutMembersForCalc,
-          snackTotal: checkoutSnackTotal,
-        })
-      )
+      const now = Date.now()
+      const diffMs = calculateElapsedMs(checkoutSession, now)
+      setCheckoutElapsedMs(diffMs)
+      setCheckoutBillableHours(getBillableHours(diffMs))
+      setCheckoutPausedMs(calculatePausedMs(checkoutSession, now))
     }, ESTIMATE_REFRESH_MS)
     return () => clearInterval(interval)
-  }, [checkoutSession, checkoutMembersForCalc, checkoutSnackTotal, getBillableHours])
+  }, [checkoutSession, getBillableHours])
 
   // Same for the partial dialog — everything else there is derived, so only the
   // clock needs to be pushed forward.
   useEffect(() => {
     if (!partialSession) return
     const interval = setInterval(() => {
-      const diffMs = Math.max(0, Date.now() - getSessionTimeInDate(partialSession).getTime())
+      const now = Date.now()
+      const diffMs = calculateElapsedMs(partialSession, now)
+      setPartialElapsedMs(diffMs)
       setPartialBillableHours(getBillableHours(diffMs))
+      setPartialPausedMs(calculatePausedMs(partialSession, now))
     }, ESTIMATE_REFRESH_MS)
     return () => clearInterval(interval)
   }, [partialSession, getBillableHours])
@@ -291,9 +410,8 @@ export function SessionsPanel({
   })
 
   async function handleCheckout(session: Session) {
-    const now = new Date()
-    const started = getSessionTimeInDate(session)
-    const diffMs = Math.max(0, now.getTime() - started.getTime())
+    const now = Date.now()
+    const diffMs = calculateElapsedMs(session, now)
     const billableHours = getBillableHours(diffMs)
 
     const { data: sessionSnacksRaw } = await supabase
@@ -312,23 +430,17 @@ export function SessionsPanel({
 
     const members = session.member_count || 1
 
+    setCheckoutElapsedMs(diffMs)
     setCheckoutBillableHours(billableHours)
+    setCheckoutPausedMs(calculatePausedMs(session, now))
+    setCheckoutDiscountHours(0)
     setCheckoutSnackItems(snackItems)
     setCheckoutSnackTotal(roundCurrency(snackTotal))
-    setCheckoutTotal(
-      calculateSessionTotal({
-        baseFee: session.base_fee,
-        hourlyRate: session.hourly_rate,
-        billableHours,
-        memberCount: members,
-        snackTotal,
-      })
-    )
     setCheckoutSession(session)
     setCheckoutMemberCount(String(members))
   }
 
-  async function refreshCheckoutSnacks(session: Session, members: number, billableHours: number) {
+  async function refreshCheckoutSnacks(session: Session) {
     const { data: sessionSnacksRaw } = await supabase
       .from("session_snacks")
       .select("id, quantity, price_at_time, snacks(name)")
@@ -344,15 +456,6 @@ export function SessionsPanel({
 
     setCheckoutSnackItems(snackItems)
     setCheckoutSnackTotal(roundCurrency(snackTotal))
-    setCheckoutTotal(
-      calculateSessionTotal({
-        baseFee: session.base_fee,
-        hourlyRate: session.hourly_rate,
-        billableHours,
-        memberCount: members,
-        snackTotal,
-      })
-    )
   }
 
   async function confirmCheckout() {
@@ -362,18 +465,32 @@ export function SessionsPanel({
       return
     }
 
-    const endedAtIso = new Date().toISOString()
-    const startedAt = getSessionTimeInDate(checkoutSession)
-    const endedAt = new Date(endedAtIso)
-    const elapsedMs = Math.max(0, endedAt.getTime() - startedAt.getTime())
+    const endedAt = Date.now()
+    const endedAtIso = new Date(endedAt).toISOString()
+    const elapsedMs = calculateElapsedMs(checkoutSession, endedAt)
     const billableHours = getBillableHours(elapsedMs)
+    // Close the open pause span so the stored row satisfies
+    // `time_out - time_in - paused_ms = elapsedMs` — the history views
+    // recompute from exactly that.
+    const pausedMs = calculatePausedMs(checkoutSession, endedAt)
     const usedHours = Math.floor(elapsedMs / (60 * 60 * 1000))
     const usedMinutes = Math.floor((elapsedMs % (60 * 60 * 1000)) / (60 * 1000))
+    // The clock moved on since the dialog opened, so re-cap the privileges
+    // against the hours actually billed rather than the ones on screen.
+    const discountHours = normalizeDiscountHours(
+      checkoutDiscountHours,
+      elapsedMs,
+      checkoutMembersForCalc,
+      pricing.max_billable_hours,
+    )
     const roundedTotal = calculateSessionTotal({
       baseFee: checkoutSession.base_fee,
       hourlyRate: checkoutSession.hourly_rate,
       billableHours,
+      elapsedMs,
+      maxBillableHours: pricing.max_billable_hours,
       memberCount: checkoutMembersForCalc,
+      discountHours,
       snackTotal: checkoutSnackTotal,
     })
 
@@ -387,6 +504,9 @@ export function SessionsPanel({
           time_out: endedAtIso,
           used_hours: usedHours,
           used_minutes: usedMinutes,
+          discount_hours: discountHours,
+          paused_at: null,
+          paused_ms: pausedMs,
           total_cost: roundedTotal,
           member_count: checkoutMembersForCalc,
         })
@@ -406,7 +526,8 @@ export function SessionsPanel({
   async function handlePartialCheckout(session: Session) {
     if ((session.member_count || 1) <= 1) return
 
-    const diffMs = Math.max(0, Date.now() - getSessionTimeInDate(session).getTime())
+    const now = Date.now()
+    const diffMs = calculateElapsedMs(session, now)
 
     const { data: sessionSnacksRaw } = await supabase
       .from("session_snacks")
@@ -422,10 +543,13 @@ export function SessionsPanel({
       price_at_time: Number(s.price_at_time),
     }))
 
+    setPartialElapsedMs(diffMs)
     setPartialBillableHours(getBillableHours(diffMs))
+    setPartialPausedMs(calculatePausedMs(session, now))
     setPartialSnackRows(rows)
     setPartialTakeQty({})
     setPartialMemberCount("1")
+    setPartialDiscountHours(0)
     setPartialSession(session)
   }
 
@@ -455,19 +579,32 @@ export function SessionsPanel({
     const parent = partialSession
     const leaving = partialMembersForCalc
     const takenItems = partialTakenItems
-    const endedAtIso = new Date().toISOString()
-    const startedAt = getSessionTimeInDate(parent)
-    const startedAtIso = startedAt.toISOString()
-    const elapsedMs = Math.max(0, new Date(endedAtIso).getTime() - startedAt.getTime())
+    const endedAt = Date.now()
+    const endedAtIso = new Date(endedAt).toISOString()
+    const startedAtIso = getSessionTimeInDate(parent).toISOString()
+    const elapsedMs = calculateElapsedMs(parent, endedAt)
     const billableHours = getBillableHours(elapsedMs)
+    // A snapshot of the parent's paused time at the split. The parent is left
+    // alone — still paused if it was paused — so the members staying behind
+    // keep counting from the same `time_in` and the same pause history.
+    const pausedMs = calculatePausedMs(parent, endedAt)
     const snackTotal = roundCurrency(
       takenItems.reduce((sum, row) => sum + row.take * row.price_at_time, 0),
+    )
+    const discountHours = normalizeDiscountHours(
+      partialDiscountHours,
+      elapsedMs,
+      leaving,
+      pricing.max_billable_hours,
     )
     const total = calculateSessionTotal({
       baseFee: parent.base_fee,
       hourlyRate: parent.hourly_rate,
       billableHours,
+      elapsedMs,
+      maxBillableHours: pricing.max_billable_hours,
       memberCount: leaving,
+      discountHours,
       snackTotal,
     })
 
@@ -511,6 +648,9 @@ export function SessionsPanel({
           time_out: endedAtIso,
           used_hours: Math.floor(elapsedMs / (60 * 60 * 1000)),
           used_minutes: Math.floor((elapsedMs % (60 * 60 * 1000)) / (60 * 1000)),
+          discount_hours: discountHours,
+          paused_at: null,
+          paused_ms: pausedMs,
           base_fee: parent.base_fee,
           hourly_rate: parent.hourly_rate,
           total_cost: total,
@@ -575,6 +715,59 @@ export function SessionsPanel({
       setIsPartialCheckingOut(false)
       setPartialSession(null)
       onUpdate()
+    }
+  }
+
+  /**
+   * Stops or restarts a session's clock.
+   *
+   * `paused_at` holds the span that is still running and `paused_ms` the ones
+   * that have closed, so resuming is a read-modify-write: the elapsed span is
+   * banked and the marker cleared. There is no transaction here — every
+   * mutation in this app is a direct client call — so the write is guarded on
+   * the value that was read, and reports honestly when it no longer matches
+   * rather than banking a span someone else already banked.
+   */
+  async function togglePause(session: Session) {
+    const now = Date.now()
+    const paused = isSessionPaused(session)
+
+    setPausingSessionId(session.id)
+    try {
+      const query = paused
+        ? supabase
+            .from("sessions")
+            .update({
+              paused_at: null,
+              paused_ms: calculatePausedMs(session, now),
+            })
+            // Matching the exact marker we read: if another staff member already
+            // resumed, this matches nothing rather than double-counting.
+            .eq("paused_at", session.paused_at)
+        : supabase
+            .from("sessions")
+            .update({ paused_at: new Date(now).toISOString() })
+            // A session that has since been checked out must not reopen a clock.
+            .eq("status", "active")
+
+      const { data, error } = await query.eq("id", session.id).select("id")
+
+      if (error) throw error
+      if (!data || data.length === 0) {
+        toast.error("Session นี้ถูกแก้ไปแล้ว — กรุณารีเฟรชแล้วลองใหม่")
+        return
+      }
+
+      toast.success(
+        paused
+          ? `${session.customer_name} เริ่มนับเวลาต่อแล้ว`
+          : `${session.customer_name} หยุดเวลาแล้ว — ยอดจะไม่เพิ่มขึ้น`,
+      )
+      onUpdate()
+    } catch {
+      toast.error(paused ? "Failed to resume session" : "Failed to pause session")
+    } finally {
+      setPausingSessionId(null)
     }
   }
 
@@ -804,6 +997,7 @@ export function SessionsPanel({
     setFinishedSessionTimeOut(now)
     setFinishedSnackQtys(initialSnackQtys)
     setFinishedCustomSnacks([])
+    setFinishedDiscountHours(0)
     setIsAddFinishedOpen(true)
   }
 
@@ -889,6 +1083,7 @@ export function SessionsPanel({
           time_out: sessionEndDate.toISOString(),
           used_hours: usageHours,
           used_minutes: usageMinutes,
+          discount_hours: finishedDiscountForCalc,
           base_fee: pricing.base_fee,
           hourly_rate: pricing.hourly_rate,
           total_cost: total,
@@ -1027,7 +1222,10 @@ export function SessionsPanel({
             </div>
           ) : (
             <div className="flex flex-col gap-3">
-              {activeSessions.map((session) => (
+              {activeSessions.map((session) => {
+                const paused = isSessionPaused(session)
+
+                return (
                 <div
                   key={session.id}
                   className="flex flex-col gap-3 rounded-xl border border-border/50 bg-card p-4 shadow-sm transition-all hover:border-accent/30 hover:shadow-md sm:flex-row sm:items-center sm:justify-between sm:gap-4"
@@ -1036,11 +1234,23 @@ export function SessionsPanel({
                   <div className="flex flex-1 items-start gap-3 sm:items-center">
                     <div className="relative flex h-11 w-11 shrink-0 items-center justify-center rounded-full gradient-primary text-sm font-bold text-primary-foreground shadow-sm">
                       {session.customer_name.charAt(0).toUpperCase()}
-                      <span className="absolute -bottom-0.5 -right-0.5 h-3 w-3 rounded-full border-2 border-card bg-accent" />
+                      <span
+                        className={`absolute -bottom-0.5 -right-0.5 h-3 w-3 rounded-full border-2 border-card ${paused ? "bg-muted-foreground" : "bg-accent"}`}
+                      />
                     </div>
-                    <div className="flex flex-col gap-0.5">
-                      <p className="font-semibold leading-tight text-foreground">
+                    <div className="flex min-w-0 flex-col gap-0.5">
+                      <p className="flex flex-wrap items-center gap-1.5 break-words font-semibold leading-tight text-foreground">
                         {session.customer_name}
+                        {paused && (
+                          <Badge
+                            variant="outline"
+                            className="gap-1 border-border bg-muted px-1.5 py-0 text-[10px] font-medium text-muted-foreground"
+                            title="หยุดเวลาอยู่ — ยอดไม่เพิ่มขึ้นจนกว่าจะกด Resume"
+                          >
+                            <Pause className="h-2.5 w-2.5" />
+                            Paused
+                          </Badge>
+                        )}
                       </p>
                       <div className="flex items-center gap-1">
                         <p className="text-xs text-muted-foreground" suppressHydrationWarning>
@@ -1065,7 +1275,7 @@ export function SessionsPanel({
                       <p className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
                         Duration
                       </p>
-                      <ActiveTimer startedAt={session.time_in || session.started_at} />
+                      <ActiveTimer session={session} />
                     </div>
                     <div className="flex flex-col items-start sm:items-center">
                       <p className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
@@ -1106,38 +1316,59 @@ export function SessionsPanel({
 
                   {/* Right: Actions */}
                   <div className="flex items-center gap-2 border-t border-border/50 pt-3 sm:border-t-0 sm:pt-0">
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => setSnackViewSession(session)}
-                      className="flex-1 border-border/50 bg-background text-xs transition-colors hover:bg-secondary sm:flex-none"
-                    >
-                      <ShoppingBag className="mr-1.5 h-3.5 w-3.5" />
-                      Snacks
-                    </Button>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      disabled={(session.member_count || 1) <= 1}
-                      title={
-                        (session.member_count || 1) <= 1
-                          ? "มีคนเดียว — ใช้ Checkout"
-                          : "เช็คเอาท์บางคนพร้อม snack บางส่วน"
-                      }
-                      onClick={() => handlePartialCheckout(session)}
-                      className="flex-1 border-border/50 bg-background text-xs transition-colors hover:bg-secondary sm:flex-none"
-                    >
-                      <UserMinus className="mr-1.5 h-3.5 w-3.5" />
-                      Partial
-                    </Button>
-                    <Button
-                      size="sm"
-                      onClick={() => handleCheckout(session)}
-                      className="flex-1 gradient-primary text-xs text-primary-foreground shadow-sm transition-all hover:opacity-90 sm:flex-none"
-                    >
-                      <LogOut className="mr-1.5 h-3.5 w-3.5" />
-                      Checkout
-                    </Button>
+                    <div className="grid flex-1 grid-cols-2 gap-2 sm:flex sm:flex-none sm:items-center">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        disabled={pausingSessionId === session.id}
+                        title={
+                          paused
+                            ? "เริ่มนับเวลาต่อ"
+                            : "หยุดเวลาชั่วคราว — เช็คเอาท์ระหว่างหยุดได้ตามปกติ"
+                        }
+                        onClick={() => togglePause(session)}
+                        className="w-full min-w-0 border-border/50 bg-background text-xs transition-colors hover:bg-secondary sm:w-auto"
+                      >
+                        {paused ? (
+                          <Play className="mr-1.5 h-3.5 w-3.5" />
+                        ) : (
+                          <Pause className="mr-1.5 h-3.5 w-3.5" />
+                        )}
+                        {paused ? "Resume" : "Pause"}
+                      </Button>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => setSnackViewSession(session)}
+                        className="w-full min-w-0 border-border/50 bg-background text-xs transition-colors hover:bg-secondary sm:w-auto"
+                      >
+                        <ShoppingBag className="mr-1.5 h-3.5 w-3.5" />
+                        Snacks
+                      </Button>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        disabled={(session.member_count || 1) <= 1}
+                        title={
+                          (session.member_count || 1) <= 1
+                            ? "มีคนเดียว — ใช้ Checkout"
+                            : "เช็คเอาท์บางคนพร้อม snack บางส่วน"
+                        }
+                        onClick={() => handlePartialCheckout(session)}
+                        className="w-full min-w-0 border-border/50 bg-background text-xs transition-colors hover:bg-secondary sm:w-auto"
+                      >
+                        <UserMinus className="mr-1.5 h-3.5 w-3.5" />
+                        Partial
+                      </Button>
+                      <Button
+                        size="sm"
+                        onClick={() => handleCheckout(session)}
+                        className="w-full min-w-0 gradient-primary text-xs text-primary-foreground shadow-sm transition-all hover:opacity-90 sm:w-auto"
+                      >
+                        <LogOut className="mr-1.5 h-3.5 w-3.5" />
+                        Checkout
+                      </Button>
+                    </div>
                     <Button
                       variant="ghost"
                       size="icon"
@@ -1149,7 +1380,8 @@ export function SessionsPanel({
                     </Button>
                   </div>
                 </div>
-              ))}
+                )
+              })}
             </div>
           )}
         </CardContent>
@@ -1195,7 +1427,10 @@ export function SessionsPanel({
               {todayCheckedOutSessions.map((session) => {
                 const started = new Date(session.started_at)
                 const ended = session.ended_at ? new Date(session.ended_at) : null
-                const durationMs = ended ? Math.max(0, ended.getTime() - started.getTime()) : 0
+                // Counted time, so a paused session reads the same here as it
+                // was billed for rather than the wall clock it occupied.
+                const durationMs = ended ? calculateElapsedMs(session, ended.getTime()) : 0
+                const pausedMs = ended ? calculatePausedMs(session, ended.getTime()) : 0
                 const hours = Math.floor(durationMs / (1000 * 60 * 60))
                 const minutes = Math.floor((durationMs % (1000 * 60 * 60)) / (1000 * 60))
 
@@ -1226,13 +1461,21 @@ export function SessionsPanel({
                         </p>
                       </div>
                     </div>
-                    <div className="flex items-center gap-4 pl-13 sm:gap-6 sm:pl-0">
+                    <div className="flex flex-wrap items-center gap-x-4 gap-y-2 pl-13 sm:flex-nowrap sm:gap-x-6 sm:pl-0">
                       <div className="flex flex-col">
                         <span className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
                           Duration
                         </span>
                         <span className="text-sm font-medium text-foreground">
                           {hours}h {minutes}m
+                          {pausedMs > 0 && (
+                            <span
+                              className="ml-1 text-[10px] text-muted-foreground"
+                              title={`หยุดเวลาไป ${formatPausedDuration(pausedMs)} — ไม่ได้คิดเงิน`}
+                            >
+                              ⏸
+                            </span>
+                          )}
                         </span>
                       </div>
                       <div className="flex flex-col">
@@ -1355,6 +1598,17 @@ export function SessionsPanel({
               )}
             </div>
 
+            <DiscountHoursField
+              id="finished-discount-hours"
+              value={finishedDiscountForCalc}
+              onChange={setFinishedDiscountHours}
+              max={finishedMaxDiscountHours}
+              countedHours={calculatePrivilegeHours(finishedUsageMs, pricing.max_billable_hours)}
+              memberCount={finishedMembersForCalc}
+              discountAmount={finishedDiscountAmount}
+              discountRate={finishedDiscountRate}
+            />
+
             <div className="flex flex-col gap-2">
               <Label>Snacks</Label>
               <div className="max-h-48 space-y-2 overflow-auto rounded-lg border border-border/50 bg-secondary/20 p-3">
@@ -1455,6 +1709,16 @@ export function SessionsPanel({
                 <p className="text-[11px] text-muted-foreground">
                   Usage time: {Math.floor(finishedUsageTotalMinutes / 60)}h {finishedUsageTotalMinutes % 60}m
                 </p>
+                {finishedDiscountAmount > 0 && (
+                  <div className="flex items-center justify-between">
+                    <span className="text-muted-foreground">
+                      ส่วนลดสิทธิ์ ({finishedDiscountForCalc} ชม.)
+                    </span>
+                    <span className="font-medium text-accent">
+                      −฿{finishedDiscountAmount.toFixed(2)}
+                    </span>
+                  </div>
+                )}
                 <div className="flex items-center justify-between">
                   <span className="text-muted-foreground">Preset snacks</span>
                   <span className="font-medium text-foreground">฿{finishedStandardSnackTotal.toFixed(2)}</span>
@@ -1525,29 +1789,26 @@ export function SessionsPanel({
               type="number"
               min="1"
               value={checkoutMemberCount}
-              onChange={(e) => {
-                const raw = e.target.value
-                setCheckoutMemberCount(raw)
-                const members = parseInt(raw, 10)
-                if (checkoutSession && Number.isFinite(members) && members >= 1) {
-                  setCheckoutTotal(
-                    calculateSessionTotal({
-                      baseFee: checkoutSession.base_fee,
-                      hourlyRate: checkoutSession.hourly_rate,
-                      billableHours: checkoutBillableHours,
-                      memberCount: members,
-                      snackTotal: checkoutSnackTotal,
-                    })
-                  )
-                }
-              }}
+              onChange={(e) => setCheckoutMemberCount(e.target.value)}
               className="h-10 border-border/50 bg-secondary/30"
             />
             {checkoutMembersInvalid && (
               <p className="text-xs text-destructive">Must be at least 1 person</p>
             )}
           </div>
-          
+
+          {/* Discount privileges */}
+          <DiscountHoursField
+            id="checkout-discount-hours"
+            value={checkoutDiscountForCalc}
+            onChange={setCheckoutDiscountHours}
+            max={checkoutMaxDiscountHours}
+            countedHours={calculatePrivilegeHours(checkoutElapsedMs, pricing.max_billable_hours)}
+            memberCount={checkoutMembersForCalc}
+            discountAmount={checkoutDiscountAmount}
+            discountRate={checkoutDiscountRate}
+          />
+
           {/* Snacks Ordered */}
           {checkoutSession && (
             <SessionSnacksList
@@ -1555,7 +1816,7 @@ export function SessionsPanel({
               snacks={snacks}
               onUpdate={() => {
                 onUpdate()
-                refreshCheckoutSnacks(checkoutSession, checkoutMembersForCalc, checkoutBillableHours)
+                refreshCheckoutSnacks(checkoutSession)
               }}
             />
           )}
@@ -1567,8 +1828,7 @@ export function SessionsPanel({
               <div className="flex justify-between">
                 <span className="text-muted-foreground">Price per person</span>
                 <span className="font-medium text-foreground">
-                  ฿
-                  {(Number(checkoutSession.base_fee) + Number(checkoutSession.hourly_rate) * checkoutBillableHours).toFixed(2)}
+                  ฿{checkoutFeePerPerson.toFixed(2)}
                   /person
                 </span>
               </div>
@@ -1577,13 +1837,25 @@ export function SessionsPanel({
                   Session fee ({checkoutMembersForCalc} person{checkoutMembersForCalc > 1 ? "s" : ""})
                 </span>
                 <span className="font-medium text-foreground">
-                  ฿
-                  {(
-                    (Number(checkoutSession.base_fee) + Number(checkoutSession.hourly_rate) * checkoutBillableHours) *
-                    checkoutMembersForCalc
-                  ).toFixed(2)}
+                  ฿{(checkoutFeePerPerson * checkoutMembersForCalc).toFixed(2)}
                 </span>
               </div>
+              {checkoutPausedMs > 0 && (
+                <p className="text-[11px] text-muted-foreground">
+                  หักเวลาที่หยุด {formatPausedDuration(checkoutPausedMs)} ออกแล้ว
+                  {isSessionPaused(checkoutSession) ? " (กำลังหยุดอยู่)" : ""}
+                </p>
+              )}
+              {checkoutDiscountAmount > 0 && (
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">
+                    ส่วนลดสิทธิ์ ({checkoutDiscountForCalc} ชม.)
+                  </span>
+                  <span className="font-medium text-accent">
+                    −฿{checkoutDiscountAmount.toFixed(2)}
+                  </span>
+                </div>
+              )}
               {checkoutSnackItems.length > 0 && (
                 <>
                   <p className="mt-1 text-xs font-bold uppercase tracking-wider text-foreground">Snacks</p>
@@ -1680,6 +1952,18 @@ export function SessionsPanel({
             )}
           </div>
 
+          {/* Discount privileges — only the departing members redeem here */}
+          <DiscountHoursField
+            id="partial-discount-hours"
+            value={partialDiscountForCalc}
+            onChange={setPartialDiscountHours}
+            max={partialMaxDiscountHours}
+            countedHours={calculatePrivilegeHours(partialElapsedMs, pricing.max_billable_hours)}
+            memberCount={partialMembersForCalc}
+            discountAmount={partialDiscountAmount}
+            discountRate={partialDiscountRate}
+          />
+
           {/* Snacks leaving */}
           <div className="flex flex-col gap-2">
             <Label className="text-sm font-medium">Snacks checking out</Label>
@@ -1756,6 +2040,21 @@ export function SessionsPanel({
                   ฿{(partialFeePerPerson * partialMembersForCalc).toFixed(2)}
                 </span>
               </div>
+              {partialPausedMs > 0 && (
+                <p className="text-[11px] text-muted-foreground">
+                  หักเวลาที่หยุด {formatPausedDuration(partialPausedMs)} ออกแล้ว — คนที่เหลือยังหยุดอยู่เหมือนเดิม
+                </p>
+              )}
+              {partialDiscountAmount > 0 && (
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">
+                    ส่วนลดสิทธิ์ ({partialDiscountForCalc} ชม.)
+                  </span>
+                  <span className="font-medium text-accent">
+                    −฿{partialDiscountAmount.toFixed(2)}
+                  </span>
+                </div>
+              )}
               {partialTakenItems.length > 0 && (
                 <>
                   <p className="mt-1 text-xs font-bold uppercase tracking-wider text-foreground">Snacks</p>
@@ -2104,11 +2403,13 @@ export function SessionsPanel({
 
           {historyDetailSession && (
             (() => {
-              const started = new Date(historyDetailSession.started_at)
               const ended = historyDetailSession.ended_at
                 ? new Date(historyDetailSession.ended_at)
                 : new Date(historyDetailSession.started_at)
-              const durationMs = Math.max(0, ended.getTime() - started.getTime())
+              // Counted time, not wall clock — a session that was paused sat at
+              // the table longer than it was billed for.
+              const durationMs = calculateElapsedMs(historyDetailSession, ended.getTime())
+              const pausedMs = calculatePausedMs(historyDetailSession, ended.getTime())
               const hours = Math.floor(durationMs / (1000 * 60 * 60))
               const minutes = Math.floor((durationMs % (1000 * 60 * 60)) / (1000 * 60))
               const billableHours = getBillableHours(durationMs)
@@ -2116,6 +2417,16 @@ export function SessionsPanel({
               const perPersonFee =
                 Number(historyDetailSession.base_fee) + Number(historyDetailSession.hourly_rate) * billableHours
               const sessionFeeTotal = perPersonFee * members
+              const discountHours = historyDetailSession.discount_hours ?? 0
+              const discountAmount = calculateDiscountAmount({
+                baseFee: historyDetailSession.base_fee,
+                hourlyRate: historyDetailSession.hourly_rate,
+                billableHours,
+                elapsedMs: durationMs,
+                maxBillableHours: pricing.max_billable_hours,
+                memberCount: members,
+                discountHours,
+              })
 
               return (
                 <div className="flex flex-col gap-3 rounded-xl border border-border/50 bg-secondary/10 p-4 text-sm">
@@ -2127,6 +2438,14 @@ export function SessionsPanel({
                     <span className="text-muted-foreground">Duration</span>
                     <span className="font-medium text-foreground">{hours}h {minutes}m</span>
                   </div>
+                  {pausedMs > 0 && (
+                    <div className="flex justify-between">
+                      <span className="text-muted-foreground">หยุดเวลา (ไม่คิดเงิน)</span>
+                      <span className="font-medium text-muted-foreground">
+                        {formatPausedDuration(pausedMs)}
+                      </span>
+                    </div>
+                  )}
                   <div className="flex justify-between">
                     <span className="text-muted-foreground">Price per person</span>
                     <span className="font-medium text-foreground">฿{perPersonFee.toFixed(2)}/person</span>
@@ -2135,6 +2454,12 @@ export function SessionsPanel({
                     <span className="text-muted-foreground">Session fee ({members} person{members > 1 ? "s" : ""})</span>
                     <span className="font-medium text-foreground">฿{sessionFeeTotal.toFixed(2)}</span>
                   </div>
+                  {discountAmount > 0 && (
+                    <div className="flex justify-between">
+                      <span className="text-muted-foreground">ส่วนลดสิทธิ์ ({discountHours} ชม.)</span>
+                      <span className="font-medium text-accent">−฿{discountAmount.toFixed(2)}</span>
+                    </div>
+                  )}
 
                   <p className="mt-1 text-xs font-bold uppercase tracking-wider text-foreground">Snacks</p>
                   {isLoadingHistoryDetails ? (
@@ -2180,9 +2505,7 @@ function EstimatedCost({ session, pricing }: { session: Session; pricing: Pricin
 
   useEffect(() => {
     const calculateCost = async () => {
-      const now = new Date()
-      const started = new Date(session.time_in || session.started_at)
-      const diffMs = Math.max(0, now.getTime() - started.getTime())
+      const diffMs = calculateElapsedMs(session)
       const billableHours = calculateBillableHours(diffMs, pricing.max_billable_hours)
 
       const { data: sessionSnacks } = await supabase
@@ -2200,6 +2523,8 @@ function EstimatedCost({ session, pricing }: { session: Session; pricing: Pricin
           baseFee: session.base_fee,
           hourlyRate: session.hourly_rate,
           billableHours,
+          elapsedMs: diffMs,
+          maxBillableHours: pricing.max_billable_hours,
           memberCount: session.member_count || 1,
           snackTotal,
         })
@@ -2227,8 +2552,7 @@ function FeePerPerson({ session, pricing }: { session: Session; pricing: Pricing
 
   useEffect(() => {
     function update() {
-      const started = new Date(session.time_in || session.started_at)
-      const diffMs = Math.max(0, Date.now() - started.getTime())
+      const diffMs = calculateElapsedMs(session)
 
       setFee(
         calculateFeePerPerson({

@@ -2,7 +2,11 @@
 
 import { useEffect, useMemo, useState } from "react"
 import { createClient } from "@/lib/supabase/client"
-import { calculateBillableHours, resolveSessionStart } from "@/lib/billing"
+import {
+  calculateBillableHours,
+  calculateDiscountAmount,
+  calculateElapsedMs,
+} from "@/lib/billing"
 import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { CheckCircle2, Clock, ShoppingBag, Sparkles, Users } from "lucide-react"
@@ -21,9 +25,10 @@ export function CheckedOutView({ session, pricing, onNewSession }: CheckedOutVie
     { id: string; name: string; quantity: number; priceAtTime: number }[]
   >([])
 
-  const started = resolveSessionStart(session)
   const ended = new Date(session.time_out || session.ended_at || Date.now())
-  const durationMs = Math.max(0, ended.getTime() - started.getTime())
+  // Counted time: a session whose clock was stopped sat at the table longer
+  // than the receipt charges for, and the receipt shows what was charged.
+  const durationMs = calculateElapsedMs(session, ended.getTime())
   const hours = Math.floor(durationMs / (1000 * 60 * 60))
   const minutes = Math.floor((durationMs % (1000 * 60 * 60)) / (1000 * 60))
   const billableHours = calculateBillableHours(durationMs, pricing.max_billable_hours)
@@ -59,7 +64,19 @@ export function CheckedOutView({ session, pricing, onNewSession }: CheckedOutVie
   const hourlyTotal = Number(session.hourly_rate) * billableHours * memberCount
   const sessionFeeTotal = baseFeeTotal + hourlyTotal
   const perPersonTotal = Number(session.base_fee) + Number(session.hourly_rate) * billableHours
-  const displayTotal = Number(session.total_cost ?? baseFeeTotal + hourlyTotal + snackTotal)
+  const discountHours = session.discount_hours ?? 0
+  const discountAmount = calculateDiscountAmount({
+    baseFee: session.base_fee,
+    hourlyRate: session.hourly_rate,
+    billableHours,
+    elapsedMs: durationMs,
+    maxBillableHours: pricing.max_billable_hours,
+    memberCount,
+    discountHours,
+  })
+  const displayTotal = Number(
+    session.total_cost ?? sessionFeeTotal - discountAmount + snackTotal,
+  )
 
   return (
     <div className="flex flex-col items-center gap-6 px-1 pt-6 sm:gap-8 sm:pt-12 slide-up">
@@ -136,6 +153,15 @@ export function CheckedOutView({ session, pricing, onNewSession }: CheckedOutVie
               <span className="text-muted-foreground">Per person</span>
               <span className="font-medium text-foreground">฿{perPersonTotal.toFixed(2)}/person</span>
             </div>
+
+            {discountAmount > 0 && (
+              <div className="flex justify-between gap-3">
+                <span className="text-muted-foreground">
+                  ส่วนลดสิทธิ์ ({discountHours} ชม.)
+                </span>
+                <span className="font-medium text-accent">−฿{discountAmount.toFixed(2)}</span>
+              </div>
+            )}
 
             {snackItems.length > 0 && (
               <>

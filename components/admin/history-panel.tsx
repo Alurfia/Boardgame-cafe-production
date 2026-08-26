@@ -2,7 +2,17 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react"
 import { createClient } from "@/lib/supabase/client"
-import { calculateBillableHours, calculateSessionTotal, roundCurrency } from "@/lib/billing"
+import {
+  calculateBillableHours,
+  calculateElapsedMs,
+  calculatePausedMs,
+  calculatePrivilegeHours,
+  calculateDiscountAmount,
+  calculateDiscountRate,
+  calculateMaxDiscountHours,
+  calculateSessionTotal,
+  roundCurrency,
+} from "@/lib/billing"
 import { toast } from "sonner"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
@@ -25,8 +35,9 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table"
-import { CalendarDays, ChevronLeft, ChevronRight, History, Pencil, Trash2 } from "lucide-react"
+import { CalendarDays, ChevronLeft, ChevronRight, History, Pause, Pencil, Trash2 } from "lucide-react"
 import { SessionSnacksList } from "./session-snacks-list"
+import { DiscountHoursField } from "./discount-hours-field"
 import type { PricingConfig, Session, Snack } from "@/lib/types"
 
 const supabase = createClient()
@@ -84,6 +95,9 @@ export function HistoryPanel({ sessions, snacks, pricing, onUpdate }: HistoryPan
   const [editMembers, setEditMembers] = useState("1")
   const [editTimeIn, setEditTimeIn] = useState("")
   const [editTimeOut, setEditTimeOut] = useState("")
+  /** `sessions.paused_ms` as whole minutes — the unit staff actually think in. */
+  const [editPausedMinutes, setEditPausedMinutes] = useState("0")
+  const [editDiscountHours, setEditDiscountHours] = useState(0)
   const [editSnackTotal, setEditSnackTotal] = useState(0)
   const [isSavingEdit, setIsSavingEdit] = useState(false)
 
@@ -158,6 +172,8 @@ export function HistoryPanel({ sessions, snacks, pricing, onUpdate }: HistoryPan
     setEditMembers(String(session.member_count || 1))
     setEditTimeIn(toDateTimeValue(getTimeIn(session)))
     setEditTimeOut(toDateTimeValue(getTimeOut(session) ?? new Date()))
+    setEditPausedMinutes(String(Math.round(Number(session.paused_ms ?? 0) / 60000)))
+    setEditDiscountHours(session.discount_hours ?? 0)
     setEditSnackTotal(snackTotals[session.id] ?? 0)
 
     // Re-read so the recalculated total is exact even if the cached map is stale.
@@ -168,20 +184,16 @@ export function HistoryPanel({ sessions, snacks, pricing, onUpdate }: HistoryPan
    * Snack edits write to the database immediately, so the frozen `total_cost`
    * is re-synced here — otherwise cancelling the dialog would leave the stored
    * total disagreeing with the snacks actually on the session. It is computed
-   * from the session's *saved* time and member count; unsaved form edits apply
-   * when Save Changes runs.
+   * from the session's *saved* time, member count and privileges; unsaved form
+   * edits apply when Save Changes runs.
    */
   async function handleSnackChange() {
     if (!editSession) return
 
     const snackTotal = await readSnackTotal(editSession.id)
 
-    const savedIn = getTimeIn(editSession)
     const savedOut = getTimeOut(editSession)
-    const savedElapsedMs =
-      savedOut && !Number.isNaN(savedIn.getTime())
-        ? Math.max(0, savedOut.getTime() - savedIn.getTime())
-        : 0
+    const savedElapsedMs = savedOut ? calculateElapsedMs(editSession, savedOut.getTime()) : 0
 
     const { error } = await supabase
       .from("sessions")
@@ -190,7 +202,10 @@ export function HistoryPanel({ sessions, snacks, pricing, onUpdate }: HistoryPan
           baseFee: editSession.base_fee,
           hourlyRate: editSession.hourly_rate,
           billableHours: calculateBillableHours(savedElapsedMs, pricing.max_billable_hours),
+          elapsedMs: savedElapsedMs,
+          maxBillableHours: pricing.max_billable_hours,
           memberCount: editSession.member_count || 1,
+          discountHours: editSession.discount_hours ?? 0,
           snackTotal,
         }),
       })
@@ -218,25 +233,68 @@ export function HistoryPanel({ sessions, snacks, pricing, onUpdate }: HistoryPan
   const editTimeOutInFuture =
     !Number.isNaN(editTimeOutDate.getTime()) && editTimeOutDate.getTime() > Date.now()
 
-  const editElapsedMs = editTimesValid
+  // Paused time is stored on the row rather than folded into the timestamps, so
+  // it has to come back off here — otherwise a corrected bill would silently
+  // re-charge the hours staff stopped the clock for.
+  const parsedEditPausedMinutes = parseInt(editPausedMinutes, 10)
+  const editPausedMinutesInvalid =
+    !Number.isFinite(parsedEditPausedMinutes) || parsedEditPausedMinutes < 0
+  const editPausedMs = editPausedMinutesInvalid ? 0 : parsedEditPausedMinutes * 60 * 1000
+  const editWallClockMs = editTimesValid
     ? Math.max(0, editTimeOutDate.getTime() - editTimeInDate.getTime())
     : 0
+  const editPausedOverruns = editTimesValid && editPausedMs > editWallClockMs
+  const editElapsedMs = editTimesValid ? Math.max(0, editWallClockMs - editPausedMs) : 0
   const editBillableHours = calculateBillableHours(editElapsedMs, pricing.max_billable_hours)
   const editPerPersonFee = editSession
     ? Number(editSession.base_fee) + Number(editSession.hourly_rate) * editBillableHours
+    : 0
+  const editMaxDiscountHours = calculateMaxDiscountHours(
+    editElapsedMs,
+    editMembersForCalc,
+    pricing.max_billable_hours,
+  )
+  // Shortening the session or dropping a member can put the saved privileges
+  // over the new cap, so the form works from the clamped number throughout.
+  const editDiscountForCalc = Math.min(editDiscountHours, editMaxDiscountHours)
+  const editDiscountRate = editSession
+    ? calculateDiscountRate({
+        baseFee: editSession.base_fee,
+        hourlyRate: editSession.hourly_rate,
+        billableHours: editBillableHours,
+      })
+    : 0
+  const editDiscountAmount = editSession
+    ? calculateDiscountAmount({
+        baseFee: editSession.base_fee,
+        hourlyRate: editSession.hourly_rate,
+        billableHours: editBillableHours,
+        elapsedMs: editElapsedMs,
+        maxBillableHours: pricing.max_billable_hours,
+        memberCount: editMembersForCalc,
+        discountHours: editDiscountForCalc,
+      })
     : 0
   const editTotal = editSession
     ? calculateSessionTotal({
         baseFee: editSession.base_fee,
         hourlyRate: editSession.hourly_rate,
         billableHours: editBillableHours,
+        elapsedMs: editElapsedMs,
+        maxBillableHours: pricing.max_billable_hours,
         memberCount: editMembersForCalc,
+        discountHours: editDiscountForCalc,
         snackTotal: editSnackTotal,
       })
     : 0
 
   const editInvalid =
-    !editName.trim() || editMembersInvalid || !editTimesValid || editTimeOutInFuture
+    !editName.trim() ||
+    editMembersInvalid ||
+    !editTimesValid ||
+    editTimeOutInFuture ||
+    editPausedMinutesInvalid ||
+    editPausedOverruns
 
   async function saveEdit() {
     if (!editSession) return
@@ -259,6 +317,14 @@ export function HistoryPanel({ sessions, snacks, pricing, onUpdate }: HistoryPan
       })
       return
     }
+    if (editPausedMinutesInvalid) {
+      toast.error("เวลาที่หยุดต้องเป็นจำนวนนาทีที่ไม่ติดลบ")
+      return
+    }
+    if (editPausedOverruns) {
+      toast.error("เวลาที่หยุดยาวกว่าช่วงเข้า–ออก")
+      return
+    }
 
     const timeInIso = editTimeInDate.toISOString()
     const timeOutIso = editTimeOutDate.toISOString()
@@ -276,6 +342,10 @@ export function HistoryPanel({ sessions, snacks, pricing, onUpdate }: HistoryPan
           time_out: timeOutIso,
           used_hours: Math.floor(editElapsedMs / (60 * 60 * 1000)),
           used_minutes: Math.floor((editElapsedMs % (60 * 60 * 1000)) / (60 * 1000)),
+          discount_hours: editDiscountForCalc,
+          paused_ms: editPausedMs,
+          // A row reached from history is closed, so no pause span is open.
+          paused_at: null,
           total_cost: editTotal,
           // The flag marks a bill no person has confirmed. Saving here is that
           // confirmation, so the row stops asking for a second look.
@@ -432,10 +502,11 @@ export function HistoryPanel({ sessions, snacks, pricing, onUpdate }: HistoryPan
                     {rows.map((session) => {
                       const timeIn = getTimeIn(session)
                       const timeOut = getTimeOut(session)
-                      const durationMs =
-                        timeOut && !Number.isNaN(timeIn.getTime())
-                          ? Math.max(0, timeOut.getTime() - timeIn.getTime())
-                          : 0
+                      // Counted time, not wall clock — a paused session sat at
+                      // the table longer than it was billed for, and this
+                      // column has to agree with ยอดรวม beside it.
+                      const durationMs = timeOut ? calculateElapsedMs(session, timeOut.getTime()) : 0
+                      const pausedMs = timeOut ? calculatePausedMs(session, timeOut.getTime()) : 0
 
                       return (
                         <TableRow key={session.id}>
@@ -458,6 +529,25 @@ export function HistoryPanel({ sessions, snacks, pricing, onUpdate }: HistoryPan
                                   title="แยกออกมาจาก session อื่น — เก็บเงินเฉพาะคนที่ออกก่อน"
                                 >
                                   Partial
+                                </Badge>
+                              )}
+                              {pausedMs > 0 && (
+                                <Badge
+                                  variant="outline"
+                                  className="gap-0.5 border-border bg-muted px-1.5 py-0 text-[10px] font-medium text-muted-foreground"
+                                  title="หยุดเวลาไประหว่างเล่น — ระยะเวลาที่แสดงหักออกแล้ว"
+                                >
+                                  <Pause className="h-2.5 w-2.5" />
+                                  {Math.round(pausedMs / 60000)}m
+                                </Badge>
+                              )}
+                              {(session.discount_hours ?? 0) > 0 && (
+                                <Badge
+                                  variant="outline"
+                                  className="border-accent/40 bg-accent/10 px-1.5 py-0 text-[10px] font-medium text-accent"
+                                  title="ใช้สิทธิ์ส่วนลด — 1 สิทธิ์ = 1 ชม."
+                                >
+                                  −{session.discount_hours} ชม.
                                 </Badge>
                               )}
                             </span>
@@ -572,6 +662,29 @@ export function HistoryPanel({ sessions, snacks, pricing, onUpdate }: HistoryPan
             )}
 
             <div className="flex flex-col gap-2">
+              <Label htmlFor="edit-history-paused">เวลาที่หยุด (นาที)</Label>
+              <Input
+                id="edit-history-paused"
+                type="number"
+                min="0"
+                value={editPausedMinutes}
+                onChange={(e) => setEditPausedMinutes(e.target.value)}
+                className="h-12 border-border/50 bg-secondary/30"
+              />
+              {editPausedMinutesInvalid ? (
+                <p className="text-xs text-destructive">ต้องเป็นจำนวนนาทีที่ไม่ติดลบ</p>
+              ) : editPausedOverruns ? (
+                <p className="text-xs text-destructive">
+                  หยุดนานกว่าช่วงเข้า–ออก — ตรวจเวลาอีกครั้ง
+                </p>
+              ) : (
+                <p className="text-[11px] text-muted-foreground">
+                  ช่วงที่กด Pause ไว้ หักออกจากเวลาที่คิดเงิน — เวลาเข้า–ออกยังเป็นเวลาจริง
+                </p>
+              )}
+            </div>
+
+            <div className="flex flex-col gap-2">
               <Label htmlFor="edit-history-members">Number of Members</Label>
               <Input
                 id="edit-history-members"
@@ -585,6 +698,17 @@ export function HistoryPanel({ sessions, snacks, pricing, onUpdate }: HistoryPan
                 <p className="text-xs text-destructive">Must be at least 1 person</p>
               )}
             </div>
+
+            <DiscountHoursField
+              id="edit-history-discount-hours"
+              value={editDiscountForCalc}
+              onChange={setEditDiscountHours}
+              max={editMaxDiscountHours}
+              countedHours={calculatePrivilegeHours(editElapsedMs, pricing.max_billable_hours)}
+              memberCount={editMembersForCalc}
+              discountAmount={editDiscountAmount}
+              discountRate={editDiscountRate}
+            />
 
             {editSession && (
               <div className="flex flex-col gap-2">
@@ -610,6 +734,9 @@ export function HistoryPanel({ sessions, snacks, pricing, onUpdate }: HistoryPan
                 <p className="text-[11px] text-muted-foreground">
                   Usage time: {formatDuration(editElapsedMs)} → billed{" "}
                   {editBillableHours.toFixed(2)}h
+                  {editPausedMs > 0
+                    ? ` (หักเวลาที่หยุด ${formatDuration(editPausedMs)} จาก ${formatDuration(editWallClockMs)})`
+                    : ""}
                 </p>
                 <div className="flex items-center justify-between">
                   <span className="text-muted-foreground">Price per person</span>
@@ -625,6 +752,16 @@ export function HistoryPanel({ sessions, snacks, pricing, onUpdate }: HistoryPan
                     ฿{(editPerPersonFee * editMembersForCalc).toFixed(2)}
                   </span>
                 </div>
+                {editDiscountAmount > 0 && (
+                  <div className="flex items-center justify-between">
+                    <span className="text-muted-foreground">
+                      ส่วนลดสิทธิ์ ({editDiscountForCalc} ชม.)
+                    </span>
+                    <span className="font-medium text-accent">
+                      −฿{editDiscountAmount.toFixed(2)}
+                    </span>
+                  </div>
+                )}
                 <div className="flex items-center justify-between">
                   <span className="text-muted-foreground">Snacks</span>
                   <span className="font-medium text-foreground">

@@ -3,6 +3,8 @@ import type { SupabaseClient } from "@supabase/supabase-js"
 import {
   DEFAULT_MAX_BILLABLE_HOURS,
   calculateBillableHours,
+  calculateElapsedMs,
+  calculatePausedMs,
   calculateSessionTotal,
   resolveSessionStart,
 } from "./billing"
@@ -20,8 +22,8 @@ import type { Session } from "./types"
  * The billing arithmetic is `lib/billing.ts` exactly as a manual checkout uses
  * it — the sweep only decides *when* to stop the clock, never *how much* to
  * charge. `time_out` is the moment the sweep runs, so a forgotten session bills
- * its real elapsed time, capped by `pricing_config.max_billable_hours` like
- * every other session.
+ * its real elapsed time, minus any time it spent paused (`012_*.sql`) and
+ * capped by `pricing_config.max_billable_hours` like every other session.
  */
 
 const MINUTE_MS = 60 * 1000
@@ -73,6 +75,12 @@ export type AutoCheckoutDecision =
  *
  * A start time in the future is left alone: it means someone typed the check-in
  * time wrong, and the admin panel already flags that for a human to correct.
+ *
+ * A *paused* session is swept like any other, and deliberately so: this measures
+ * the wall clock, because a table nobody closed still holds its name against the
+ * unique index and still keeps the day from settling whether its clock is
+ * running or not. Pausing changes what the session is *charged*, never when it
+ * is due to close.
  */
 export function decideAutoCheckout(
   session: Pick<Session, "time_in" | "started_at">,
@@ -99,6 +107,8 @@ export interface AutoCheckoutClosed {
   reason: "overnight" | "over-threshold"
   usedHours: number
   usedMinutes: number
+  /** Time the clock was stopped for, excluded from the bill — `012_*.sql`. */
+  pausedMs: number
   billableHours: number
   totalCost: number
 }
@@ -212,7 +222,10 @@ export async function runAutoCheckout(
         continue
     }
 
-    const elapsedMs = Math.max(0, now.getTime() - resolveSessionStart(session).getTime())
+    const elapsedMs = calculateElapsedMs(session, now.getTime())
+    // Banks the pause span still open at the sweep, so the closed row satisfies
+    // `time_out - time_in - paused_ms = elapsedMs` for the history views.
+    const pausedMs = calculatePausedMs(session, now.getTime())
     const billableHours = calculateBillableHours(elapsedMs, maxBillableHours)
     const usedHours = Math.floor(elapsedMs / HOUR_MS)
     const usedMinutes = Math.floor((elapsedMs % HOUR_MS) / MINUTE_MS)
@@ -220,7 +233,12 @@ export async function runAutoCheckout(
       baseFee: session.base_fee,
       hourlyRate: session.hourly_rate,
       billableHours,
+      elapsedMs,
+      maxBillableHours,
       memberCount: session.member_count || 1,
+      // Privileges are handed over at the counter, so a swept session normally
+      // carries none — honouring the column keeps this off a second billing path.
+      discountHours: session.discount_hours ?? 0,
       snackTotal: snackTotals.get(session.id) ?? 0,
     })
 
@@ -233,6 +251,8 @@ export async function runAutoCheckout(
         time_out: endedAtIso,
         used_hours: usedHours,
         used_minutes: usedMinutes,
+        paused_at: null,
+        paused_ms: pausedMs,
         total_cost: totalCost,
         auto_checked_out: true,
       })
@@ -255,6 +275,7 @@ export async function runAutoCheckout(
       reason: decision.reason,
       usedHours,
       usedMinutes,
+      pausedMs,
       billableHours,
       totalCost,
     })

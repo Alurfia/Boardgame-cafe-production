@@ -111,6 +111,8 @@ const NUMERIC_COLUMNS: Record<TableName, string[]> = {
     "total_cost",
     "used_hours",
     "used_minutes",
+    "discount_hours",
+    "paused_ms",
   ],
   session_snacks: ["quantity", "price_at_time"],
   app_users: [],
@@ -123,10 +125,14 @@ const TABLE_DEFAULTS: Record<TableName, Row> = {
     member_count: 1,
     status: "active",
     ended_at: null,
-    time_in: null,
     time_out: null,
     used_hours: 0,
     used_minutes: 0,
+    discount_hours: 0,
+    paused_at: null,
+    paused_ms: 0,
+    auto_checked_out: false,
+    parent_session_id: null,
     base_fee: 5,
     hourly_rate: 3,
     total_cost: null,
@@ -143,7 +149,14 @@ const REQUIRED_COLUMNS: Record<TableName, string[]> = {
   app_users: ["username", "password_hash"],
 }
 
-/** Foreign keys: `column` in this table must reference an existing row. */
+/**
+ * Foreign keys: `column` in this table must reference an existing row.
+ *
+ * `sessions.parent_session_id` (`010_*.sql`) is deliberately absent. This map
+ * only models "the referenced row must exist" and `CASCADES` only models
+ * delete-cascade, so neither can express that column's `ON DELETE SET NULL` —
+ * enforcing half of it would drift further from Postgres than leaving it out.
+ */
 const FOREIGN_KEYS: Partial<Record<TableName, Array<{ column: string; table: TableName }>>> = {
   session_snacks: [
     { column: "session_id", table: "sessions" },
@@ -169,7 +182,10 @@ function applyDefaults(table: TableName, values: Row): Row {
   row.id = values.id ?? randomUUID()
   row.created_at = values.created_at ?? now
 
+  // Both default to now() in Postgres (001 and 008), so the check-in paths can
+  // omit them and let the server own the clock.
   if (table === "sessions" && row.started_at == null) row.started_at = now
+  if (table === "sessions" && row.time_in == null) row.time_in = now
   if (table === "pricing_config" && row.updated_at == null) row.updated_at = now
   if (table === "app_users" && row.updated_at == null) row.updated_at = now
 
@@ -217,6 +233,22 @@ function validateRow(
       return mockError(
         "23514",
         'new row for relation "sessions" violates check constraint "sessions_used_minutes_range_check"',
+      )
+    }
+
+    const discountHours = Number(row.discount_hours ?? 0)
+    if (!Number.isFinite(discountHours) || discountHours < 0) {
+      return mockError(
+        "23514",
+        'new row for relation "sessions" violates check constraint "sessions_discount_hours_non_negative_check"',
+      )
+    }
+
+    const pausedMs = Number(row.paused_ms ?? 0)
+    if (!Number.isFinite(pausedMs) || pausedMs < 0) {
+      return mockError(
+        "23514",
+        'new row for relation "sessions" violates check constraint "sessions_paused_ms_non_negative_check"',
       )
     }
 

@@ -41,6 +41,19 @@ export interface Session {
   time_out?: string | null
   used_hours?: number
   used_minutes?: number
+  /** Closed by the nightly sweep rather than by a person — `009_*.sql`. */
+  auto_checked_out?: boolean
+  /** Redeemed discount privileges, one billable hour each — `011_*.sql`. */
+  discount_hours?: number
+  /**
+   * When the clock was stopped, or null while it is running — `012_*.sql`.
+   * Cleared at checkout, so a `checked_out` row is never left mid-pause.
+   */
+  paused_at?: string | null
+  /** Paused spans that have already ended, in milliseconds — `012_*.sql`. */
+  paused_ms?: number
+  /** Set on the child row a partial checkout split off — `010_*.sql`. */
+  parent_session_id?: string | null
   base_fee: number
   hourly_rate: number
   total_cost: number | null
